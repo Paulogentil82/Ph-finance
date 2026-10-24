@@ -1,5 +1,6 @@
 package com.example.phfinance.util
 
+import androidx.room.withTransaction
 import android.content.Context
 import android.content.Intent
 import androidx.core.content.FileProvider
@@ -292,10 +293,8 @@ object BackupManager {
             val payload = decryptWrapperToPayload(backupContent, password)
             require(payload.version in 1..5) { "Versão de backup inválida ou não suportada: ${payload.version}" }
 
-            database.runInTransaction {
-                kotlinx.coroutines.runBlocking {
-                    importPayloadInternal(payload, dao)
-                }
+            database.withTransaction {
+                importPayloadInternal(payload, dao)
             }
 
             BackupImportResult(
@@ -322,10 +321,8 @@ object BackupManager {
     ): BackupImportResult = withContext(Dispatchers.IO) {
         try {
             require(payload.version in 1..5) { "Versão de backup inválida ou não suportada: ${payload.version}" }
-            database.runInTransaction {
-                kotlinx.coroutines.runBlocking {
-                    importPayloadInternal(payload, dao)
-                }
+            database.withTransaction {
+                importPayloadInternal(payload, dao)
             }
             BackupImportResult(
                 success = true,

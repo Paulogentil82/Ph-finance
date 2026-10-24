@@ -1091,7 +1091,7 @@ class PhFinanceRepository(
         dao.observeAllCostAllocations()
 
     suspend fun saveCostAllocation(allocation: CostAllocationEntity) {
-        val block: suspend () -> Unit = {
+        database.withTransaction {
             // 1. Verificar se a competência está fechada em definitivo
             val closure = dao.getClosureByCompetence(allocation.competence)
             if (closure != null && closure.status == "DEFINITIVO") {
@@ -1116,14 +1116,6 @@ class PhFinanceRepository(
             }
 
             dao.insertCostAllocation(allocation)
-        }
-
-        if (database != null) {
-            database.withTransaction {
-                block()
-            }
-        } else {
-            block()
         }
     }
 
@@ -1155,7 +1147,7 @@ class PhFinanceRepository(
         previewItems: List<ApportionmentPreviewItem>,
         notes: String = ""
     ) {
-        val block: suspend () -> Unit = {
+        database.withTransaction {
             val closure = dao.getClosureByCompetence(competence)
             if (closure != null && closure.status == "DEFINITIVO") {
                 throw IllegalStateException("Não é permitido executar rateio sobre período com fechamento DEFINITIVO.")
@@ -1191,14 +1183,6 @@ class PhFinanceRepository(
                     )
                 }
             }
-        }
-
-        if (database != null) {
-            database.withTransaction {
-                block()
-            }
-        } else {
-            block()
         }
     }
 

@@ -47,12 +47,16 @@ import com.example.phfinance.data.model.PricingScenarioResult
 import com.example.phfinance.util.ProfitabilityEngine
 import com.example.phfinance.util.PricingSimulatorEngine
 import kotlinx.coroutines.flow.Flow
+import androidx.room.withTransaction
 import kotlinx.coroutines.flow.first
 import java.util.Calendar
 import java.util.UUID
 import kotlin.math.abs
 
-class PhFinanceRepository(private val dao: PhFinanceDao) {
+class PhFinanceRepository(
+    private val dao: PhFinanceDao,
+    private val database: androidx.room.RoomDatabase? = null
+) {
 
     // --- CLIENTS ---
     fun observeActiveClients(): Flow<List<ClientEntity>> = dao.observeActiveClients()
@@ -1087,30 +1091,40 @@ class PhFinanceRepository(private val dao: PhFinanceDao) {
         dao.observeAllCostAllocations()
 
     suspend fun saveCostAllocation(allocation: CostAllocationEntity) {
-        // 1. Verificar se a competência está fechada em definitivo
-        val closure = dao.getClosureByCompetence(allocation.competence)
-        if (closure != null && closure.status == "DEFINITIVO") {
-            throw IllegalStateException("Não é permitido alocar custos em competência com fechamento DEFINITIVO sem reabertura prévia.")
+        val block: suspend () -> Unit = {
+            // 1. Verificar se a competência está fechada em definitivo
+            val closure = dao.getClosureByCompetence(allocation.competence)
+            if (closure != null && closure.status == "DEFINITIVO") {
+                throw IllegalStateException("Não é permitido alocar custos em competência com fechamento DEFINITIVO sem reabertura prévia.")
+            }
+
+            // 2. Validar limite em relação à despesa original
+            val expense = dao.getExpenseById(allocation.expenseId)
+                ?: throw IllegalArgumentException("Despesa original não encontrada.")
+
+            val existing = dao.getCostAllocationsByExpense(allocation.expenseId)
+            val valid = ProfitabilityEngine.validateAllocationLimit(
+                expense = expense,
+                existingAllocations = existing,
+                newAllocationCents = allocation.allocatedAmountCents,
+                excludeAllocationId = allocation.id
+            )
+            if (!valid) {
+                val available = ProfitabilityEngine.getAvailableAmountForAllocation(expense, existing)
+                val availableFormatted = CurrencyUtils.formatCents(available)
+                throw IllegalArgumentException("O valor alocado excede o saldo disponível da despesa (Disponível: $availableFormatted).")
+            }
+
+            dao.insertCostAllocation(allocation)
         }
 
-        // 2. Validar limite em relação à despesa original
-        val expense = dao.getExpenseById(allocation.expenseId)
-            ?: throw IllegalArgumentException("Despesa original não encontrada.")
-
-        val existing = dao.getCostAllocationsByExpense(allocation.expenseId)
-        val valid = ProfitabilityEngine.validateAllocationLimit(
-            expense = expense,
-            existingAllocations = existing,
-            newAllocationCents = allocation.allocatedAmountCents,
-            excludeAllocationId = allocation.id
-        )
-        if (!valid) {
-            val available = ProfitabilityEngine.getAvailableAmountForAllocation(expense, existing)
-            val availableFormatted = CurrencyUtils.formatCents(available)
-            throw IllegalArgumentException("O valor alocado excede o saldo disponível da despesa (Disponível: $availableFormatted).")
+        if (database != null) {
+            database.withTransaction {
+                block()
+            }
+        } else {
+            block()
         }
-
-        dao.insertCostAllocation(allocation)
     }
 
     suspend fun deleteCostAllocation(id: String) {
@@ -1141,40 +1155,50 @@ class PhFinanceRepository(private val dao: PhFinanceDao) {
         previewItems: List<ApportionmentPreviewItem>,
         notes: String = ""
     ) {
-        val closure = dao.getClosureByCompetence(competence)
-        if (closure != null && closure.status == "DEFINITIVO") {
-            throw IllegalStateException("Não é permitido executar rateio sobre período com fechamento DEFINITIVO.")
-        }
-
-        val expense = dao.getExpenseById(expenseId)
-            ?: throw IllegalArgumentException("Despesa não encontrada.")
-
-        val existing = dao.getCostAllocationsByExpense(expenseId)
-        val totalToAllocate = previewItems.sumOf { it.allocatedCents }
-        val available = ProfitabilityEngine.getAvailableAmountForAllocation(expense, existing)
-
-        if (totalToAllocate > available) {
-            throw IllegalArgumentException("O valor total do rateio (${CurrencyUtils.formatCents(totalToAllocate)}) excede o disponível na despesa (${CurrencyUtils.formatCents(available)}).")
-        }
-
-        previewItems.forEach { item ->
-            if (item.allocatedCents > 0) {
-                dao.insertCostAllocation(
-                    CostAllocationEntity(
-                        id = UUID.randomUUID().toString(),
-                        expenseId = expenseId,
-                        allocationType = CostAllocationType.INDIRETO_RATEADO,
-                        contractId = item.contractId,
-                        clientId = item.clientId,
-                        serviceId = item.serviceId,
-                        competence = competence,
-                        allocatedAmountCents = item.allocatedCents,
-                        allocationPercentage = item.percentage,
-                        notes = "Rateio (${policy.name}): ${notes.ifBlank { "Rateio automático" }}",
-                        createdAt = System.currentTimeMillis()
-                    )
-                )
+        val block: suspend () -> Unit = {
+            val closure = dao.getClosureByCompetence(competence)
+            if (closure != null && closure.status == "DEFINITIVO") {
+                throw IllegalStateException("Não é permitido executar rateio sobre período com fechamento DEFINITIVO.")
             }
+
+            val expense = dao.getExpenseById(expenseId)
+                ?: throw IllegalArgumentException("Despesa não encontrada.")
+
+            val existing = dao.getCostAllocationsByExpense(expenseId)
+            val totalToAllocate = previewItems.sumOf { it.allocatedCents }
+            val available = ProfitabilityEngine.getAvailableAmountForAllocation(expense, existing)
+
+            if (totalToAllocate > available) {
+                throw IllegalArgumentException("O valor total do rateio (${CurrencyUtils.formatCents(totalToAllocate)}) excede o disponível na despesa (${CurrencyUtils.formatCents(available)}).")
+            }
+
+            previewItems.forEach { item ->
+                if (item.allocatedCents > 0) {
+                    dao.insertCostAllocation(
+                        CostAllocationEntity(
+                            id = UUID.randomUUID().toString(),
+                            expenseId = expenseId,
+                            allocationType = CostAllocationType.INDIRETO_RATEADO,
+                            contractId = item.contractId,
+                            clientId = item.clientId,
+                            serviceId = item.serviceId,
+                            competence = competence,
+                            allocatedAmountCents = item.allocatedCents,
+                            allocationPercentage = item.percentage,
+                            notes = "Rateio (${policy.name}): ${notes.ifBlank { "Rateio automático" }}",
+                            createdAt = System.currentTimeMillis()
+                        )
+                    )
+                }
+            }
+        }
+
+        if (database != null) {
+            database.withTransaction {
+                block()
+            }
+        } else {
+            block()
         }
     }
 

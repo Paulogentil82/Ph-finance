@@ -124,7 +124,7 @@ class PhFinanceViewModel(application: Application) : AndroidViewModel(applicatio
 
     init {
         val db = AppDatabase.getDatabase(application)
-        repository = PhFinanceRepository(db.phFinanceDao())
+        repository = PhFinanceRepository(db.phFinanceDao(), db)
 
         // Run automatic billing reconciliation on startup
         viewModelScope.launch {

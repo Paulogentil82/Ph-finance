@@ -15,6 +15,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -78,6 +81,22 @@ import com.example.phfinance.util.ReportExporter
 @Composable
 fun FinancialScreen(viewModel: PhFinanceViewModel) {
     var selectedTab by remember { mutableStateOf(0) }
+
+    val triggerReceivable by viewModel.triggerOpenAddReceivable.collectAsState()
+    val triggerExpense by viewModel.triggerOpenAddExpense.collectAsState()
+    val triggerPayment by viewModel.triggerOpenAddPayment.collectAsState()
+
+    androidx.compose.runtime.LaunchedEffect(triggerExpense) {
+        if (triggerExpense) {
+            selectedTab = 1
+        }
+    }
+
+    androidx.compose.runtime.LaunchedEffect(triggerReceivable, triggerPayment) {
+        if (triggerReceivable || triggerPayment) {
+            selectedTab = 0
+        }
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         ScrollableTabRow(
@@ -231,9 +250,20 @@ fun ReceivablesTab(viewModel: PhFinanceViewModel) {
             receivable = receivable,
             accounts = accounts,
             onDismiss = { selectedReceivableForPayment = null },
-            onConfirmPayment = { amountCents, feeCents, accountId, method, ref ->
-                viewModel.registerPayment(receivable.id, amountCents, feeCents, accountId, method, ref)
-                selectedReceivableForPayment = null
+            onConfirmPayment = { amountCents, feeCents, accountId, method, ref, onSuccess, onError ->
+                viewModel.registerPayment(
+                    receivableId = receivable.id,
+                    amountReceivedCents = amountCents,
+                    feeCents = feeCents,
+                    destinationAccountId = accountId,
+                    paymentMethod = method,
+                    transactionRef = ref,
+                    onSuccess = {
+                        onSuccess()
+                        selectedReceivableForPayment = null
+                    },
+                    onError = onError
+                )
             }
         )
     }
@@ -242,9 +272,18 @@ fun ReceivablesTab(viewModel: PhFinanceViewModel) {
         CustomReceivableDialog(
             clients = clients,
             onDismiss = { showAddReceivableDialog = false },
-            onSave = { clientId, desc, valCents, dueDate ->
-                viewModel.addCustomReceivable(clientId, desc, valCents, dueDate)
-                showAddReceivableDialog = false
+            onSave = { clientId, desc, valCents, dueDate, onSuccess, onError ->
+                viewModel.addCustomReceivable(
+                    clientId = clientId,
+                    description = desc,
+                    valueCents = valCents,
+                    dueDate = dueDate,
+                    onSuccess = {
+                        onSuccess()
+                        showAddReceivableDialog = false
+                    },
+                    onError = onError
+                )
             }
         )
     }
@@ -333,6 +372,15 @@ fun ExpensesTab(viewModel: PhFinanceViewModel) {
     var showAddExpenseDialog by remember { mutableStateOf(false) }
     var payingExpense by remember { mutableStateOf<ExpenseEntity?>(null) }
 
+    val triggerAddExpense by viewModel.triggerOpenAddExpense.collectAsState()
+
+    androidx.compose.runtime.LaunchedEffect(triggerAddExpense) {
+        if (triggerAddExpense) {
+            showAddExpenseDialog = true
+            viewModel.consumeAddExpenseFormTrigger()
+        }
+    }
+
     val filteredList = expenses.filter { it.competence == competence }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -420,9 +468,20 @@ fun ExpensesTab(viewModel: PhFinanceViewModel) {
     if (showAddExpenseDialog) {
         ExpenseDialog(
             onDismiss = { showAddExpenseDialog = false },
-            onSave = { desc, cat, supp, valCents, due, isOwner ->
-                viewModel.addExpense(desc, cat, supp, valCents, due, isOwner)
-                showAddExpenseDialog = false
+            onSave = { desc, cat, supp, valCents, due, isOwner, onSuccess, onError ->
+                viewModel.addExpense(
+                    description = desc,
+                    category = cat,
+                    supplier = supp,
+                    valueCents = valCents,
+                    dueDate = due,
+                    isOwnerPersonalWithdrawal = isOwner,
+                    onSuccess = {
+                        showAddExpenseDialog = false
+                        onSuccess()
+                    },
+                    onError = onError
+                )
             }
         )
     }
@@ -507,46 +566,79 @@ fun PaymentSettlementDialog(
     receivable: ReceivableEntity,
     accounts: List<FinancialAccountEntity>,
     onDismiss: () -> Unit,
-    onConfirmPayment: (Long, Long, String, PaymentMethod, String) -> Unit
+    onConfirmPayment: (
+        amountCents: Long,
+        feeCents: Long,
+        accountId: String,
+        method: PaymentMethod,
+        ref: String,
+        onSuccess: () -> Unit,
+        onError: (String) -> Unit
+    ) -> Unit
 ) {
-    var amountText by remember { mutableStateOf(String.format(java.util.Locale.US, "%.2f", (receivable.netValueCents - receivable.receivedValueCents) / 100.0)) }
+    val remainingNetCents = (receivable.netValueCents - receivable.receivedValueCents).coerceAtLeast(0L)
+    var amountText by remember { mutableStateOf(String.format(java.util.Locale.US, "%.2f", remainingNetCents / 100.0)) }
     var feeText by remember { mutableStateOf("0") }
     var selectedAccountId by remember { mutableStateOf(accounts.firstOrNull()?.id ?: "") }
     var selectedMethod by remember { mutableStateOf(PaymentMethod.PIX) }
     var transactionRef by remember { mutableStateOf("") }
 
     var expandedAccount by remember { mutableStateOf(false) }
+    var expandedMethod by remember { mutableStateOf(false) }
 
-    Dialog(onDismissRequest = onDismiss) {
+    var validationError by remember { mutableStateOf<String?>(null) }
+    var isSaving by remember { mutableStateOf(false) }
+
+    Dialog(
+        onDismissRequest = { if (!isSaving) onDismiss() },
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+    ) {
         Card(
             shape = RoundedCornerShape(16.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            modifier = Modifier.padding(16.dp)
+            modifier = Modifier
+                .fillMaxWidth(0.92f)
+                .padding(16.dp)
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(20.dp)
+                    .verticalScroll(rememberScrollState())
             ) {
                 Text("Baixa Financeira de Pagamento", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text(
+                    text = "Saldo Pendente: ${CurrencyUtils.formatCents(remainingNetCents)}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = EmeraldPrimary,
+                    fontWeight = FontWeight.Bold
+                )
                 Spacer(modifier = Modifier.height(12.dp))
 
                 OutlinedTextField(
                     value = amountText,
-                    onValueChange = { amountText = it },
-                    label = { Text("Valor Efetivamente Recebido (R$)") },
+                    onValueChange = {
+                        amountText = it
+                        validationError = null
+                    },
+                    label = { Text("Valor Efetivamente Recebido (R$) *") },
                     modifier = Modifier.fillMaxWidth(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    enabled = !isSaving
                 )
 
                 Spacer(modifier = Modifier.height(8.dp))
 
                 OutlinedTextField(
                     value = feeText,
-                    onValueChange = { feeText = it },
+                    onValueChange = {
+                        feeText = it
+                        validationError = null
+                    },
                     label = { Text("Taxa do Meio de Pagamento (R$)") },
                     modifier = Modifier.fillMaxWidth(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    enabled = !isSaving
                 )
 
                 Spacer(modifier = Modifier.height(8.dp))
@@ -554,15 +646,16 @@ fun PaymentSettlementDialog(
                 // Account Selector
                 ExposedDropdownMenuBox(
                     expanded = expandedAccount,
-                    onExpandedChange = { expandedAccount = !expandedAccount }
+                    onExpandedChange = { if (!isSaving) expandedAccount = !expandedAccount }
                 ) {
                     OutlinedTextField(
-                        value = accounts.find { it.id == selectedAccountId }?.name ?: "Selecione a Conta",
+                        value = accounts.find { it.id == selectedAccountId }?.name ?: "Selecione a Conta *",
                         onValueChange = {},
                         readOnly = true,
-                        label = { Text("Conta de Destino") },
+                        label = { Text("Conta de Destino *") },
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedAccount) },
-                        modifier = Modifier.menuAnchor().fillMaxWidth()
+                        modifier = Modifier.menuAnchor().fillMaxWidth(),
+                        enabled = !isSaving
                     )
                     ExposedDropdownMenu(
                         expanded = expandedAccount,
@@ -570,31 +663,120 @@ fun PaymentSettlementDialog(
                     ) {
                         accounts.forEach { acc ->
                             DropdownMenuItem(
-                                text = { Text(acc.name) },
+                                text = { Text("${acc.name} (${CurrencyUtils.formatCents(acc.currentBalanceCents)})") },
                                 onClick = {
                                     selectedAccountId = acc.id
                                     expandedAccount = false
+                                    validationError = null
                                 }
                             )
                         }
                     }
                 }
 
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Payment Method Selector
+                ExposedDropdownMenuBox(
+                    expanded = expandedMethod,
+                    onExpandedChange = { if (!isSaving) expandedMethod = !expandedMethod }
+                ) {
+                    OutlinedTextField(
+                        value = selectedMethod.label,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Forma de Pagamento") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedMethod) },
+                        modifier = Modifier.menuAnchor().fillMaxWidth(),
+                        enabled = !isSaving
+                    )
+                    ExposedDropdownMenu(
+                        expanded = expandedMethod,
+                        onDismissRequest = { expandedMethod = false }
+                    ) {
+                        PaymentMethod.values().forEach { method ->
+                            DropdownMenuItem(
+                                text = { Text(method.label) },
+                                onClick = {
+                                    selectedMethod = method
+                                    expandedMethod = false
+                                }
+                            )
+                        }
+                    }
+                }
+
+                validationError?.let { err ->
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = err,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+
                 Spacer(modifier = Modifier.height(16.dp))
 
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    OutlinedButton(onClick = onDismiss) { Text("Cancelar") }
+                    OutlinedButton(onClick = onDismiss, enabled = !isSaving) { Text("Cancelar") }
                     Spacer(modifier = Modifier.width(8.dp))
                     Button(
+                        enabled = !isSaving,
                         onClick = {
-                            val valCents = CurrencyUtils.parseToCents(amountText)
-                            val feeCents = CurrencyUtils.parseToCents(feeText)
-                            if (valCents > 0 && selectedAccountId.isNotBlank()) {
-                                onConfirmPayment(valCents, feeCents, selectedAccountId, selectedMethod, transactionRef)
+                            validationError = null
+                            val valCents = try {
+                                val clean = amountText.replace(",", ".").trim()
+                                if (clean.isBlank()) 0L else (clean.toDouble() * 100).toLong()
+                            } catch (e: Exception) {
+                                -1L
                             }
+
+                            if (valCents <= 0L) {
+                                validationError = "Informe um valor recebido maior que zero."
+                                return@Button
+                            }
+
+                            val feeCents = try {
+                                val clean = feeText.replace(",", ".").trim()
+                                if (clean.isBlank()) 0L else (clean.toDouble() * 100).toLong()
+                            } catch (e: Exception) {
+                                0L
+                            }
+
+                            if (selectedAccountId.isBlank()) {
+                                validationError = "Selecione uma conta de destino."
+                                return@Button
+                            }
+
+                            isSaving = true
+                            onConfirmPayment(
+                                valCents,
+                                feeCents,
+                                selectedAccountId,
+                                selectedMethod,
+                                transactionRef.trim(),
+                                /* onSuccess */ {
+                                    isSaving = false
+                                    onDismiss()
+                                },
+                                /* onError */ { err ->
+                                    isSaving = false
+                                    validationError = err
+                                }
+                            )
                         }
                     ) {
-                        Text("Confirmar Baixa")
+                        if (isSaving) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                color = MaterialTheme.colorScheme.onPrimary,
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Processando...")
+                        } else {
+                            Text("Confirmar Baixa")
+                        }
                     }
                 }
             }
@@ -602,59 +784,177 @@ fun PaymentSettlementDialog(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CustomReceivableDialog(
     clients: List<ClientEntity>,
     onDismiss: () -> Unit,
-    onSave: (String, String, Long, Long) -> Unit
+    onSave: (
+        clientId: String,
+        description: String,
+        valueCents: Long,
+        dueDate: Long,
+        onSuccess: () -> Unit,
+        onError: (String) -> Unit
+    ) -> Unit
 ) {
     var selectedClientId by remember { mutableStateOf(clients.firstOrNull()?.id ?: "") }
     var description by remember { mutableStateOf("") }
     var valueText by remember { mutableStateOf("") }
+    var expandedClient by remember { mutableStateOf(false) }
 
-    Dialog(onDismissRequest = onDismiss) {
+    var validationError by remember { mutableStateOf<String?>(null) }
+    var isSaving by remember { mutableStateOf(false) }
+
+    val selectedClient = clients.find { it.id == selectedClientId }
+
+    Dialog(
+        onDismissRequest = { if (!isSaving) onDismiss() },
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+    ) {
         Card(
             shape = RoundedCornerShape(16.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            modifier = Modifier.padding(16.dp)
+            modifier = Modifier
+                .fillMaxWidth(0.92f)
+                .padding(16.dp)
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(20.dp)
+                    .verticalScroll(rememberScrollState())
             ) {
                 Text("Criar Cobrança Avulsa", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 Spacer(modifier = Modifier.height(12.dp))
 
+                // Student Selector
+                ExposedDropdownMenuBox(
+                    expanded = expandedClient,
+                    onExpandedChange = { if (!isSaving) expandedClient = !expandedClient }
+                ) {
+                    OutlinedTextField(
+                        value = selectedClient?.fullName ?: "Selecione o Aluno",
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Aluno / Cliente *") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedClient) },
+                        modifier = Modifier.menuAnchor().fillMaxWidth(),
+                        enabled = !isSaving
+                    )
+                    ExposedDropdownMenu(
+                        expanded = expandedClient,
+                        onDismissRequest = { expandedClient = false }
+                    ) {
+                        clients.forEach { client ->
+                            DropdownMenuItem(
+                                text = { Text("${client.fullName} (${client.nickname})") },
+                                onClick = {
+                                    selectedClientId = client.id
+                                    expandedClient = false
+                                    validationError = null
+                                }
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
                 OutlinedTextField(
                     value = description,
-                    onValueChange = { description = it },
-                    label = { Text("Descrição / Serviço") },
-                    modifier = Modifier.fillMaxWidth()
+                    onValueChange = {
+                        description = it
+                        validationError = null
+                    },
+                    label = { Text("Descrição / Serviço *") },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !isSaving
                 )
 
                 Spacer(modifier = Modifier.height(8.dp))
 
                 OutlinedTextField(
                     value = valueText,
-                    onValueChange = { valueText = it },
-                    label = { Text("Valor (R$)") },
+                    onValueChange = {
+                        valueText = it
+                        validationError = null
+                    },
+                    label = { Text("Valor (R$) *") },
                     modifier = Modifier.fillMaxWidth(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    enabled = !isSaving
                 )
+
+                validationError?.let { err ->
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = err,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
 
                 Spacer(modifier = Modifier.height(16.dp))
 
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    OutlinedButton(onClick = onDismiss) { Text("Cancelar") }
+                    OutlinedButton(onClick = onDismiss, enabled = !isSaving) { Text("Cancelar") }
                     Spacer(modifier = Modifier.width(8.dp))
-                    Button(onClick = {
-                        val valCents = CurrencyUtils.parseToCents(valueText)
-                        if (selectedClientId.isNotBlank() && valCents > 0) {
-                            onSave(selectedClientId, description, valCents, System.currentTimeMillis() + 86400000L * 5)
+                    Button(
+                        enabled = !isSaving,
+                        onClick = {
+                            validationError = null
+                            if (selectedClientId.isBlank()) {
+                                validationError = "Selecione um aluno para a cobrança."
+                                return@Button
+                            }
+
+                            val trimmedDesc = description.trim()
+                            if (trimmedDesc.isBlank()) {
+                                validationError = "Informe a descrição da cobrança."
+                                return@Button
+                            }
+
+                            val valCents = try {
+                                val clean = valueText.replace(",", ".").trim()
+                                if (clean.isBlank()) 0L else (clean.toDouble() * 100).toLong()
+                            } catch (e: Exception) {
+                                -1L
+                            }
+
+                            if (valCents <= 0L) {
+                                validationError = "Informe um valor maior que zero."
+                                return@Button
+                            }
+
+                            isSaving = true
+                            onSave(
+                                selectedClientId,
+                                trimmedDesc,
+                                valCents,
+                                System.currentTimeMillis() + 86400000L * 5,
+                                /* onSuccess */ {
+                                    isSaving = false
+                                    onDismiss()
+                                },
+                                /* onError */ { err ->
+                                    isSaving = false
+                                    validationError = err
+                                }
+                            )
                         }
-                    }) {
-                        Text("Criar Cobrança")
+                    ) {
+                        if (isSaving) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                color = MaterialTheme.colorScheme.onPrimary,
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Criando...")
+                        } else {
+                            Text("Criar Cobrança")
+                        }
                     }
                 }
             }
@@ -665,7 +965,16 @@ fun CustomReceivableDialog(
 @Composable
 fun ExpenseDialog(
     onDismiss: () -> Unit,
-    onSave: (String, String, String, Long, Long, Boolean) -> Unit
+    onSave: (
+        description: String,
+        category: String,
+        supplier: String,
+        valueCents: Long,
+        dueDate: Long,
+        isOwnerWithdrawal: Boolean,
+        onSuccess: () -> Unit,
+        onError: (String) -> Unit
+    ) -> Unit
 ) {
     var description by remember { mutableStateOf("") }
     var category by remember { mutableStateOf("Assinaturas e Aplicativos") }
@@ -673,35 +982,52 @@ fun ExpenseDialog(
     var valueText by remember { mutableStateOf("") }
     var isOwnerWithdrawal by remember { mutableStateOf(false) }
 
-    Dialog(onDismissRequest = onDismiss) {
+    var validationError by remember { mutableStateOf<String?>(null) }
+    var isSaving by remember { mutableStateOf(false) }
+
+    Dialog(
+        onDismissRequest = { if (!isSaving) onDismiss() },
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+    ) {
         Card(
             shape = RoundedCornerShape(16.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            modifier = Modifier.padding(16.dp)
+            modifier = Modifier
+                .fillMaxWidth(0.92f)
+                .padding(16.dp)
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(20.dp)
+                    .verticalScroll(rememberScrollState())
             ) {
                 Text("Registrar Despesa", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 Spacer(modifier = Modifier.height(12.dp))
 
                 OutlinedTextField(
                     value = description,
-                    onValueChange = { description = it },
-                    label = { Text("Descrição da Despesa") },
-                    modifier = Modifier.fillMaxWidth()
+                    onValueChange = {
+                        description = it
+                        validationError = null
+                    },
+                    label = { Text("Descrição da Despesa *") },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !isSaving
                 )
 
                 Spacer(modifier = Modifier.height(8.dp))
 
                 OutlinedTextField(
                     value = valueText,
-                    onValueChange = { valueText = it },
-                    label = { Text("Valor (R$)") },
+                    onValueChange = {
+                        valueText = it
+                        validationError = null
+                    },
+                    label = { Text("Valor (R$) *") },
                     modifier = Modifier.fillMaxWidth(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    enabled = !isSaving
                 )
 
                 Spacer(modifier = Modifier.height(8.dp))
@@ -709,23 +1035,78 @@ fun ExpenseDialog(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(
                         checked = isOwnerWithdrawal,
-                        onCheckedChange = { isOwnerWithdrawal = it }
+                        onCheckedChange = { isOwnerWithdrawal = it },
+                        enabled = !isSaving
                     )
                     Text("Retirada Pessoal do Proprietário (Pro-Labore)", style = MaterialTheme.typography.bodyMedium)
+                }
+
+                validationError?.let { err ->
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = err,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
                 }
 
                 Spacer(modifier = Modifier.height(16.dp))
 
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    OutlinedButton(onClick = onDismiss) { Text("Cancelar") }
+                    OutlinedButton(onClick = onDismiss, enabled = !isSaving) { Text("Cancelar") }
                     Spacer(modifier = Modifier.width(8.dp))
-                    Button(onClick = {
-                        val valCents = CurrencyUtils.parseToCents(valueText)
-                        if (description.isNotBlank() && valCents > 0) {
-                            onSave(description, category, supplier, valCents, System.currentTimeMillis() + 86400000L * 3, isOwnerWithdrawal)
+                    Button(
+                        enabled = !isSaving,
+                        onClick = {
+                            validationError = null
+                            val trimmedDesc = description.trim()
+                            if (trimmedDesc.isBlank()) {
+                                validationError = "A descrição da despesa é obrigatoria."
+                                return@Button
+                            }
+
+                            val valCents = try {
+                                val clean = valueText.replace(",", ".").trim()
+                                if (clean.isBlank()) 0L else (clean.toDouble() * 100).toLong()
+                            } catch (e: Exception) {
+                                -1L
+                            }
+
+                            if (valCents <= 0L) {
+                                validationError = "Informe um valor de despesa maior que zero."
+                                return@Button
+                            }
+
+                            isSaving = true
+                            onSave(
+                                trimmedDesc,
+                                category,
+                                supplier.trim(),
+                                valCents,
+                                System.currentTimeMillis() + 86400000L * 3,
+                                isOwnerWithdrawal,
+                                /* onSuccess */ {
+                                    isSaving = false
+                                    onDismiss()
+                                },
+                                /* onError */ { err ->
+                                    isSaving = false
+                                    validationError = err
+                                }
+                            )
                         }
-                    }) {
-                        Text("Salvar Despesa")
+                    ) {
+                        if (isSaving) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                color = MaterialTheme.colorScheme.onPrimary,
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Salvando...")
+                        } else {
+                            Text("Salvar Despesa")
+                        }
                     }
                 }
             }

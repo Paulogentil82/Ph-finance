@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -58,6 +59,9 @@ import com.example.phfinance.data.model.CurrencyUtils
 import com.example.phfinance.data.model.DateUtils
 import com.example.phfinance.data.model.ReceivableStatus
 import com.example.phfinance.data.model.WhatsappTemplateType
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.runtime.LaunchedEffect
+import com.example.phfinance.ui.screens.CustomReceivableDialog
 import com.example.phfinance.ui.screens.PaymentSettlementDialog
 import com.example.phfinance.ui.theme.EmeraldPrimary
 import com.example.phfinance.ui.theme.StatusRed
@@ -78,8 +82,33 @@ fun BillingCenterComponent(viewModel: PhFinanceViewModel) {
     var filterStatus by remember { mutableStateOf("TODOS") }
     var selectedReceivableForPayment by remember { mutableStateOf<ReceivableEntity?>(null) }
     var selectedReceivableForWhatsapp by remember { mutableStateOf<ReceivableEntity?>(null) }
+    var showAddReceivableDialog by remember { mutableStateOf(false) }
+    var showSelectReceivableForPaymentDialog by remember { mutableStateOf(false) }
 
     val competenceReceivables = receivables.filter { it.competence == competence && it.status != ReceivableStatus.CANCELADA }
+
+    val triggerReceivable by viewModel.triggerOpenAddReceivable.collectAsState()
+    val triggerPayment by viewModel.triggerOpenAddPayment.collectAsState()
+    val userFeedback by viewModel.userFeedbackMessage.collectAsState()
+
+    LaunchedEffect(triggerReceivable) {
+        if (triggerReceivable) {
+            showAddReceivableDialog = true
+            viewModel.consumeAddReceivableFormTrigger()
+        }
+    }
+
+    LaunchedEffect(triggerPayment) {
+        if (triggerPayment) {
+            val pendingList = competenceReceivables.filter { it.status != ReceivableStatus.QUITADA }
+            if (pendingList.isNotEmpty()) {
+                showSelectReceivableForPaymentDialog = true
+            } else {
+                viewModel.setUserFeedback("Nenhuma cobrança pendente na competência $competence para registrar recebimento.")
+            }
+            viewModel.consumeAddPaymentFormTrigger()
+        }
+    }
 
     val now = System.currentTimeMillis()
     val sevenDaysFromNow = now + 7 * 86400000L
@@ -121,163 +150,272 @@ fun BillingCenterComponent(viewModel: PhFinanceViewModel) {
         }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(16.dp)
-    ) {
-        // TOP METRICS SUMMARY CARDS GRID
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                MetricMiniCard(
-                    modifier = Modifier.weight(1f),
-                    label = "A Receber no Mês",
-                    value = CurrencyUtils.formatCents(totalToReceiveCents),
-                    valueColor = EmeraldPrimary
-                )
-                MetricMiniCard(
-                    modifier = Modifier.weight(1f),
-                    label = "Vencendo Hoje",
-                    value = CurrencyUtils.formatCents(dueTodayCents),
-                    valueColor = StatusYellow
-                )
-            }
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                MetricMiniCard(
-                    modifier = Modifier.weight(1f),
-                    label = "Próximos 7 Dias",
-                    value = CurrencyUtils.formatCents(next7DaysCents),
-                    valueColor = MaterialTheme.colorScheme.onSurface
-                )
-                MetricMiniCard(
-                    modifier = Modifier.weight(1f),
-                    label = "Valores Vencidos",
-                    value = CurrencyUtils.formatCents(overdueCents),
-                    valueColor = StatusRed,
-                    subtitle = "$overdueClientsCount alunos inadimplentes"
-                )
-            }
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                MetricMiniCard(
-                    modifier = Modifier.weight(1f),
-                    label = "Parciais / Quitadas",
-                    value = "$partiallyPaidCount parciais / $fullyPaidCount quitadas",
-                    valueColor = MaterialTheme.colorScheme.onSurface
-                )
-                MetricMiniCard(
-                    modifier = Modifier.weight(1f),
-                    label = "MRR Contratado",
-                    value = CurrencyUtils.formatCents(mrrCents),
-                    valueColor = EmeraldPrimary
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // Actions & Filters Bar
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp)
         ) {
-            Button(onClick = { viewModel.generateMonthlyDues() }) {
-                Icon(Icons.Default.Receipt, contentDescription = null)
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("Gerar Mensalidades")
-            }
-
-            IconButton(onClick = {
-                ReportExporter.exportReceivablesCsv(context, filteredList, clients)
-            }) {
-                Icon(Icons.Default.Share, contentDescription = "Exportar CSV")
-            }
-        }
-
-        Spacer(modifier = Modifier.height(10.dp))
-
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf("TODOS", "PENDENTE", "PARCIAL", "VENCIDA", "QUITADA").forEach { tag ->
-                FilterChip(
-                    selected = filterStatus == tag,
-                    onClick = { filterStatus = tag },
-                    label = { Text(tag.lowercase().capitalize(), fontSize = 11.sp) }
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        if (filteredList.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(32.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text("Nenhuma cobrança encontrada com o filtro selecionado.")
-            }
-        } else {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                items(filteredList) { receivable ->
-                    val client = clientMap[receivable.clientId]
-                    val clientName = client?.fullName ?: "Aluno"
-
-                    Card(
-                        shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                        modifier = Modifier.fillMaxWidth()
+            userFeedback?.let { msg ->
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column(modifier = Modifier.padding(14.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column {
-                                    Text(clientName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                                    Text("Vencimento: ${DateUtils.formatDate(receivable.dueDate)}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
+                        Text(msg, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.weight(1f))
+                        IconButton(onClick = { viewModel.clearUserFeedback() }) {
+                            Icon(Icons.Default.Cancel, contentDescription = "Fechar")
+                        }
+                    }
+                }
+            }
 
-                                StatusBadge(status = receivable.status, isOverdue = receivable.dueDate < now && receivable.status != ReceivableStatus.QUITADA)
-                            }
+            // TOP METRICS SUMMARY CARDS GRID
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    MetricMiniCard(
+                        modifier = Modifier.weight(1f),
+                        label = "A Receber no Mês",
+                        value = CurrencyUtils.formatCents(totalToReceiveCents),
+                        valueColor = EmeraldPrimary
+                    )
+                    MetricMiniCard(
+                        modifier = Modifier.weight(1f),
+                        label = "Vencendo Hoje",
+                        value = CurrencyUtils.formatCents(dueTodayCents),
+                        valueColor = StatusYellow
+                    )
+                }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    MetricMiniCard(
+                        modifier = Modifier.weight(1f),
+                        label = "Próximos 7 Dias",
+                        value = CurrencyUtils.formatCents(next7DaysCents),
+                        valueColor = MaterialTheme.colorScheme.onSurface
+                    )
+                    MetricMiniCard(
+                        modifier = Modifier.weight(1f),
+                        label = "Valores Vencidos",
+                        value = CurrencyUtils.formatCents(overdueCents),
+                        valueColor = StatusRed,
+                        subtitle = "$overdueClientsCount alunos inadimplentes"
+                    )
+                }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    MetricMiniCard(
+                        modifier = Modifier.weight(1f),
+                        label = "Parciais / Quitadas",
+                        value = "$partiallyPaidCount parciais / $fullyPaidCount quitadas",
+                        valueColor = MaterialTheme.colorScheme.onSurface
+                    )
+                    MetricMiniCard(
+                        modifier = Modifier.weight(1f),
+                        label = "MRR Contratado",
+                        value = CurrencyUtils.formatCents(mrrCents),
+                        valueColor = EmeraldPrimary
+                    )
+                }
+            }
 
-                            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(16.dp))
 
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column {
-                                    Text("Líquido: ${CurrencyUtils.formatCents(receivable.netValueCents)}", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                                    if (receivable.receivedValueCents > 0) {
-                                        Text("Recebido: ${CurrencyUtils.formatCents(receivable.receivedValueCents)}", style = MaterialTheme.typography.labelMedium, color = EmeraldPrimary)
+            // Actions & Filters Bar
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Button(onClick = { viewModel.generateMonthlyDues() }) {
+                    Icon(Icons.Default.Receipt, contentDescription = null)
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Gerar Mensalidades")
+                }
+
+                IconButton(onClick = {
+                    ReportExporter.exportReceivablesCsv(context, filteredList, clients)
+                }) {
+                    Icon(Icons.Default.Share, contentDescription = "Exportar CSV")
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf("TODOS", "PENDENTE", "PARCIAL", "VENCIDA", "QUITADA").forEach { tag ->
+                    FilterChip(
+                        selected = filterStatus == tag,
+                        onClick = { filterStatus = tag },
+                        label = { Text(tag.lowercase().capitalize(), fontSize = 11.sp) }
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            if (filteredList.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(32.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("Nenhuma cobrança encontrada com o filtro selecionado.")
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    items(filteredList) { receivable ->
+                        val client = clientMap[receivable.clientId]
+                        val clientName = client?.fullName ?: "Aluno"
+
+                        Card(
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(14.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column {
+                                        Text(clientName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                        Text("Vencimento: ${DateUtils.formatDate(receivable.dueDate)}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
+
+                                    StatusBadge(status = receivable.status, isOverdue = receivable.dueDate < now && receivable.status != ReceivableStatus.QUITADA)
                                 }
 
-                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    if (client != null) {
-                                        OutlinedButton(
-                                            onClick = { selectedReceivableForWhatsapp = receivable },
-                                            colors = ButtonDefaults.outlinedButtonColors(contentColor = EmeraldPrimary)
-                                        ) {
-                                            Icon(Icons.Default.Message, contentDescription = "WhatsApp", modifier = Modifier.size(16.dp))
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Text("WhatsApp", fontSize = 12.sp)
+                                Spacer(modifier = Modifier.height(10.dp))
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column {
+                                        Text("Líquido: ${CurrencyUtils.formatCents(receivable.netValueCents)}", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                        if (receivable.receivedValueCents > 0) {
+                                            Text("Recebido: ${CurrencyUtils.formatCents(receivable.receivedValueCents)}", style = MaterialTheme.typography.labelMedium, color = EmeraldPrimary)
                                         }
                                     }
 
-                                    if (receivable.status != ReceivableStatus.QUITADA) {
-                                        Button(onClick = { selectedReceivableForPayment = receivable }) {
-                                            Icon(Icons.Default.Payment, contentDescription = null, modifier = Modifier.size(16.dp))
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Text("Baixar", fontSize = 12.sp)
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        if (client != null) {
+                                            OutlinedButton(
+                                                onClick = { selectedReceivableForWhatsapp = receivable },
+                                                colors = ButtonDefaults.outlinedButtonColors(contentColor = EmeraldPrimary)
+                                            ) {
+                                                Icon(Icons.Default.Message, contentDescription = "WhatsApp", modifier = Modifier.size(16.dp))
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text("WhatsApp", fontSize = 12.sp)
+                                            }
+                                        }
+
+                                        if (receivable.status != ReceivableStatus.QUITADA) {
+                                            Button(onClick = { selectedReceivableForPayment = receivable }) {
+                                                Icon(Icons.Default.Payment, contentDescription = null, modifier = Modifier.size(16.dp))
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text("Baixar", fontSize = 12.sp)
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
+                    }
+                }
+            }
+        }
+
+        // FAB to Add Custom Receivable
+        FloatingActionButton(
+            onClick = { showAddReceivableDialog = true },
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(24.dp),
+            containerColor = EmeraldPrimary
+        ) {
+            Icon(Icons.Default.Add, contentDescription = "Nova Cobrança Avulsa", tint = MaterialTheme.colorScheme.surface)
+        }
+    }
+
+    if (showAddReceivableDialog) {
+        CustomReceivableDialog(
+            clients = clients,
+            onDismiss = { showAddReceivableDialog = false },
+            onSave = { clientId, description, valueCents, dueDate, onSuccess, onError ->
+                viewModel.addCustomReceivable(
+                    clientId = clientId,
+                    description = description,
+                    valueCents = valueCents,
+                    dueDate = dueDate,
+                    onSuccess = {
+                        showAddReceivableDialog = false
+                        onSuccess()
+                    },
+                    onError = onError
+                )
+            }
+        )
+    }
+
+    if (showSelectReceivableForPaymentDialog) {
+        val pendingList = competenceReceivables.filter { it.status != ReceivableStatus.QUITADA }
+        Dialog(onDismissRequest = { showSelectReceivableForPaymentDialog = false }) {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                modifier = Modifier.padding(16.dp)
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(20.dp)
+                ) {
+                    Text("Selecione a Cobrança para Baixa", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    LazyColumn(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(pendingList) { rec ->
+                            val clientName = clientMap[rec.clientId]?.fullName ?: "Aluno"
+                            val remaining = (rec.netValueCents - rec.receivedValueCents).coerceAtLeast(0L)
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        selectedReceivableForPayment = rec
+                                        showSelectReceivableForPaymentDialog = false
+                                    },
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Text(clientName, fontWeight = FontWeight.Bold)
+                                    Text(
+                                        "Vencimento: ${DateUtils.formatDate(rec.dueDate)} • Saldo: ${CurrencyUtils.formatCents(remaining)}",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = EmeraldPrimary
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    OutlinedButton(
+                        onClick = { showSelectReceivableForPaymentDialog = false },
+                        modifier = Modifier.align(Alignment.End)
+                    ) {
+                        Text("Cancelar")
                     }
                 }
             }
@@ -290,9 +428,20 @@ fun BillingCenterComponent(viewModel: PhFinanceViewModel) {
             receivable = receivable,
             accounts = accounts,
             onDismiss = { selectedReceivableForPayment = null },
-            onConfirmPayment = { amountCents, feeCents, accountId, method, ref ->
-                viewModel.registerPayment(receivable.id, amountCents, feeCents, accountId, method, ref)
-                selectedReceivableForPayment = null
+            onConfirmPayment = { amountCents, feeCents, accountId, method, ref, onSuccess, onError ->
+                viewModel.registerPayment(
+                    receivableId = receivable.id,
+                    amountReceivedCents = amountCents,
+                    feeCents = feeCents,
+                    destinationAccountId = accountId,
+                    paymentMethod = method,
+                    transactionRef = ref,
+                    onSuccess = {
+                        selectedReceivableForPayment = null
+                        onSuccess()
+                    },
+                    onError = onError
+                )
             }
         )
     }

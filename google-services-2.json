@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "423239482765",
+    "project_id": "ph-finance-78fcf",
+    "storage_bucket": "ph-finance-78fcf.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:423239482765:android:5d3189694489d534c411c4",
+        "android_client_info": {
+          "package_name": "com.aistudio.phfinance.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "423239482765-vsa525a8ae4gepdu184rh8i0htt2fvne.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.aistudio.phfinance.app",
+            "certificate_hash": "4ff6639f4ec3cb20a93be6120cc4735b265c7c38"
+          }
+        },
+        {
+          "client_id": "423239482765-rqs3v60kb13tmudc8vuhknoohptotsnc.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBJMCwDcLljwVKbZmVI9rEV3AKR268adhQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "423239482765-rqs3v60kb13tmudc8vuhknoohptotsnc.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

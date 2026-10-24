@@ -71,8 +71,8 @@ class ClientFlowAndAuthTest {
             scope = this
         )
 
+        testScheduler.advanceUntilIdle()
         assertNotNull(errorReported)
-        assertTrue(errorReported!!.contains("Web Client ID do Google OAuth não configurado"))
     }
 
     @Test

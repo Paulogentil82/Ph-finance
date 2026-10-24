@@ -75,6 +75,10 @@ class PhFinanceViewModel(application: Application) : AndroidViewModel(applicatio
     val isDarkMode = MutableStateFlow(true)
     val searchQuery = MutableStateFlow("")
     val triggerOpenAddClient = MutableStateFlow(false)
+    val triggerOpenAddReceivable = MutableStateFlow(false)
+    val triggerOpenAddExpense = MutableStateFlow(false)
+    val triggerOpenAddPayment = MutableStateFlow(false)
+    val userFeedbackMessage = MutableStateFlow<String?>(null)
 
     val clients: StateFlow<List<ClientEntity>>
     val allClients: StateFlow<List<ClientEntity>>
@@ -306,6 +310,38 @@ class PhFinanceViewModel(application: Application) : AndroidViewModel(applicatio
         triggerOpenAddClient.value = false
     }
 
+    fun triggerAddReceivableForm() {
+        triggerOpenAddReceivable.value = true
+    }
+
+    fun consumeAddReceivableFormTrigger() {
+        triggerOpenAddReceivable.value = false
+    }
+
+    fun triggerAddExpenseForm() {
+        triggerOpenAddExpense.value = true
+    }
+
+    fun consumeAddExpenseFormTrigger() {
+        triggerOpenAddExpense.value = false
+    }
+
+    fun triggerAddPaymentForm() {
+        triggerOpenAddPayment.value = true
+    }
+
+    fun consumeAddPaymentFormTrigger() {
+        triggerOpenAddPayment.value = false
+    }
+
+    fun setUserFeedback(message: String) {
+        userFeedbackMessage.value = message
+    }
+
+    fun clearUserFeedback() {
+        userFeedbackMessage.value = null
+    }
+
     // Client CRUD
     fun saveClient(
         id: String?,
@@ -414,9 +450,24 @@ class PhFinanceViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     // Receivables & Recurring
-    fun generateMonthlyDues() {
+    fun generateMonthlyDues(
+        onSuccess: ((Int) -> Unit)? = null,
+        onError: ((String) -> Unit)? = null
+    ) {
         viewModelScope.launch {
-            repository.generateMonthlyRecurrentDues()
+            try {
+                val created = repository.generateMonthlyRecurrentDues()
+                if (created > 0) {
+                    userFeedbackMessage.value = "$created mensalidades geradas para a competência ${selectedCompetence.value}."
+                } else {
+                    userFeedbackMessage.value = "Mensalidades do mês ${selectedCompetence.value} já foram geradas anteriormente."
+                }
+                onSuccess?.invoke(created)
+            } catch (e: Exception) {
+                val err = e.localizedMessage ?: "Erro ao gerar mensalidades."
+                userFeedbackMessage.value = err
+                onError?.invoke(err)
+            }
         }
     }
 
@@ -424,17 +475,27 @@ class PhFinanceViewModel(application: Application) : AndroidViewModel(applicatio
         clientId: String,
         description: String,
         valueCents: Long,
-        dueDate: Long
+        dueDate: Long,
+        onSuccess: (() -> Unit)? = null,
+        onError: ((String) -> Unit)? = null
     ) {
         viewModelScope.launch {
-            repository.generateCustomReceivable(
-                clientId = clientId,
-                description = description,
-                valueCents = valueCents,
-                discountCents = 0L,
-                dueDate = dueDate,
-                competence = selectedCompetence.value
-            )
+            try {
+                repository.generateCustomReceivable(
+                    clientId = clientId,
+                    description = description,
+                    valueCents = valueCents,
+                    discountCents = 0L,
+                    dueDate = dueDate,
+                    competence = selectedCompetence.value
+                )
+                userFeedbackMessage.value = "Cobrança avulsa criada com sucesso!"
+                onSuccess?.invoke()
+            } catch (e: Exception) {
+                val err = e.localizedMessage ?: "Erro ao criar cobrança avulsa."
+                userFeedbackMessage.value = err
+                onError?.invoke(err)
+            }
         }
     }
 
@@ -446,18 +507,28 @@ class PhFinanceViewModel(application: Application) : AndroidViewModel(applicatio
         destinationAccountId: String,
         paymentMethod: PaymentMethod,
         transactionRef: String = "",
-        notes: String = ""
+        notes: String = "",
+        onSuccess: (() -> Unit)? = null,
+        onError: ((String) -> Unit)? = null
     ) {
         viewModelScope.launch {
-            repository.registerPayment(
-                receivableId = receivableId,
-                amountReceivedCents = amountReceivedCents,
-                feeCents = feeCents,
-                destinationAccountId = destinationAccountId,
-                paymentMethod = paymentMethod,
-                transactionRef = transactionRef,
-                notes = notes
-            )
+            try {
+                repository.registerPayment(
+                    receivableId = receivableId,
+                    amountReceivedCents = amountReceivedCents,
+                    feeCents = feeCents,
+                    destinationAccountId = destinationAccountId,
+                    paymentMethod = paymentMethod,
+                    transactionRef = transactionRef,
+                    notes = notes
+                )
+                userFeedbackMessage.value = "Baixa financeira registrada com sucesso!"
+                onSuccess?.invoke()
+            } catch (e: Exception) {
+                val err = e.localizedMessage ?: "Erro ao registrar pagamento."
+                userFeedbackMessage.value = err
+                onError?.invoke(err)
+            }
         }
     }
 
@@ -468,35 +539,55 @@ class PhFinanceViewModel(application: Application) : AndroidViewModel(applicatio
         supplier: String,
         valueCents: Long,
         dueDate: Long,
-        isOwnerPersonalWithdrawal: Boolean
+        isOwnerPersonalWithdrawal: Boolean,
+        onSuccess: (() -> Unit)? = null,
+        onError: ((String) -> Unit)? = null
     ) {
         viewModelScope.launch {
-            val expense = ExpenseEntity(
-                id = UUID.randomUUID().toString(),
-                description = description,
-                category = category,
-                supplier = supplier,
-                valueCents = valueCents,
-                competence = selectedCompetence.value,
-                dueDate = dueDate,
-                status = ExpenseStatus.PENDENTE,
-                isOwnerPersonalWithdrawal = isOwnerPersonalWithdrawal
-            )
-            repository.saveExpense(expense)
+            try {
+                val expense = ExpenseEntity(
+                    id = UUID.randomUUID().toString(),
+                    description = description,
+                    category = category,
+                    supplier = supplier,
+                    valueCents = valueCents,
+                    competence = selectedCompetence.value,
+                    dueDate = dueDate,
+                    status = ExpenseStatus.PENDENTE,
+                    isOwnerPersonalWithdrawal = isOwnerPersonalWithdrawal
+                )
+                repository.saveExpense(expense)
+                userFeedbackMessage.value = "Despesa registrada com sucesso!"
+                onSuccess?.invoke()
+            } catch (e: Exception) {
+                val err = e.localizedMessage ?: "Erro ao registrar despesa."
+                userFeedbackMessage.value = err
+                onError?.invoke(err)
+            }
         }
     }
 
     fun payExpense(
         expenseId: String,
         accountId: String,
-        paymentMethod: PaymentMethod
+        paymentMethod: PaymentMethod,
+        onSuccess: (() -> Unit)? = null,
+        onError: ((String) -> Unit)? = null
     ) {
         viewModelScope.launch {
-            repository.payExpense(
-                expenseId = expenseId,
-                accountId = accountId,
-                paymentMethod = paymentMethod
-            )
+            try {
+                repository.payExpense(
+                    expenseId = expenseId,
+                    accountId = accountId,
+                    paymentMethod = paymentMethod
+                )
+                userFeedbackMessage.value = "Pagamento de despesa confirmado!"
+                onSuccess?.invoke()
+            } catch (e: Exception) {
+                val err = e.localizedMessage ?: "Erro ao efetuar pagamento da despesa."
+                userFeedbackMessage.value = err
+                onError?.invoke(err)
+            }
         }
     }
 
@@ -505,15 +596,25 @@ class PhFinanceViewModel(application: Application) : AndroidViewModel(applicatio
         sourceAccountId: String,
         destinationAccountId: String,
         amountCents: Long,
-        description: String
+        description: String,
+        onSuccess: (() -> Unit)? = null,
+        onError: ((String) -> Unit)? = null
     ) {
         viewModelScope.launch {
-            repository.transferBetweenAccounts(
-                sourceAccountId = sourceAccountId,
-                destinationAccountId = destinationAccountId,
-                amountCents = amountCents,
-                description = description
-            )
+            try {
+                repository.transferBetweenAccounts(
+                    sourceAccountId = sourceAccountId,
+                    destinationAccountId = destinationAccountId,
+                    amountCents = amountCents,
+                    description = description
+                )
+                userFeedbackMessage.value = "Transferência entre contas realizada!"
+                onSuccess?.invoke()
+            } catch (e: Exception) {
+                val err = e.localizedMessage ?: "Erro ao realizar transferência."
+                userFeedbackMessage.value = err
+                onError?.invoke(err)
+            }
         }
     }
 

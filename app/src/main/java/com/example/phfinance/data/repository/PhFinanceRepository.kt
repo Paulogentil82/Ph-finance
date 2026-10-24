@@ -263,64 +263,66 @@ class PhFinanceRepository(
         transactionRef: String = "",
         notes: String = ""
     ) {
-        val receivable = dao.getReceivableById(receivableId) ?: return
+        database.withTransaction {
+            val receivable = dao.getReceivableById(receivableId) ?: return@withTransaction
 
-        // Enforce domain lock for closed monthly periods
-        val closure = dao.getClosureByCompetence(receivable.competence)
-        if (closure?.status == "DEFINITIVO") {
-            throw IllegalStateException("Competência ${receivable.competence} possui Fechamento Definitivo e está bloqueada para registro de pagamentos.")
-        }
+            // Enforce domain lock for closed monthly periods
+            val closure = dao.getClosureByCompetence(receivable.competence)
+            if (closure?.status == "DEFINITIVO") {
+                throw IllegalStateException("Competência ${receivable.competence} possui Fechamento Definitivo e está bloqueada para registro de pagamentos.")
+            }
 
-        val netAmountCents = (amountReceivedCents - feeCents).coerceAtLeast(0L)
+            val netAmountCents = (amountReceivedCents - feeCents).coerceAtLeast(0L)
 
-        // 1. Create Payment record
-        val payment = PaymentEntity(
-            id = UUID.randomUUID().toString(),
-            receivableId = receivableId,
-            clientId = receivable.clientId,
-            grossAmountCents = amountReceivedCents,
-            feeCents = feeCents,
-            netAmountCents = netAmountCents,
-            paymentDate = System.currentTimeMillis(),
-            destinationAccountId = destinationAccountId,
-            paymentMethod = paymentMethod,
-            transactionRef = transactionRef,
-            notes = notes
-        )
-        dao.insertPayment(payment)
-
-        // 2. Update Receivable received value & status
-        val newReceivedTotal = receivable.receivedValueCents + amountReceivedCents
-        val newStatus = if (newReceivedTotal >= receivable.netValueCents) {
-            ReceivableStatus.QUITADA
-        } else {
-            ReceivableStatus.PARCIALMENTE_PAGA
-        }
-        dao.updateReceivable(
-            receivable.copy(
-                receivedValueCents = newReceivedTotal,
-                status = newStatus,
-                updatedAt = System.currentTimeMillis()
-            )
-        )
-
-        // 3. Update Destination Account Balance
-        dao.updateAccountBalance(destinationAccountId, netAmountCents)
-
-        // 4. Log Account Movement
-        val client = dao.getClientById(receivable.clientId)
-        val clientName = client?.fullName ?: "Aluno"
-        dao.insertMovement(
-            AccountMovementEntity(
+            // 1. Create Payment record
+            val payment = PaymentEntity(
                 id = UUID.randomUUID().toString(),
-                accountId = destinationAccountId,
-                type = MovementType.ENTRADA,
-                amountCents = netAmountCents,
-                date = System.currentTimeMillis(),
-                description = "Recebimento: $clientName (${receivable.competence})",
-                relatedEntityId = payment.id
+                receivableId = receivableId,
+                clientId = receivable.clientId,
+                grossAmountCents = amountReceivedCents,
+                feeCents = feeCents,
+                netAmountCents = netAmountCents,
+                paymentDate = System.currentTimeMillis(),
+                destinationAccountId = destinationAccountId,
+                paymentMethod = paymentMethod,
+                transactionRef = transactionRef,
+                notes = notes
             )
-        )
+            dao.insertPayment(payment)
+
+            // 2. Update Receivable received value & status
+            val newReceivedTotal = receivable.receivedValueCents + amountReceivedCents
+            val newStatus = if (newReceivedTotal >= receivable.netValueCents) {
+                ReceivableStatus.QUITADA
+            } else {
+                ReceivableStatus.PARCIALMENTE_PAGA
+            }
+            dao.updateReceivable(
+                receivable.copy(
+                    receivedValueCents = newReceivedTotal,
+                    status = newStatus,
+                    updatedAt = System.currentTimeMillis()
+                )
+            )
+
+            // 3. Update Destination Account Balance
+            dao.updateAccountBalance(destinationAccountId, netAmountCents)
+
+            // 4. Log Account Movement
+            val client = dao.getClientById(receivable.clientId)
+            val clientName = client?.fullName ?: "Aluno"
+            dao.insertMovement(
+                AccountMovementEntity(
+                    id = UUID.randomUUID().toString(),
+                    accountId = destinationAccountId,
+                    type = MovementType.ENTRADA,
+                    amountCents = netAmountCents,
+                    date = System.currentTimeMillis(),
+                    description = "Recebimento: $clientName (${receivable.competence})",
+                    relatedEntityId = payment.id
+                )
+            )
+        }
     }
 
     // --- EXPENSES (CONTAS A PAGAR) ---

@@ -217,19 +217,21 @@ class PhFinanceViewModel(application: Application) : AndroidViewModel(applicatio
 
         profitabilityMetrics = combine(receivables, payments, expenses) { rec, pay, exp ->
             Triple(rec, pay, exp)
-        }.combine(combine(costAllocations, timeTrackings, selectedCompetence) { alloc, time, comp ->
-            Triple(alloc, time, comp)
+        }.combine(combine(costAllocations, timeTrackings, hourlyEconomicRateCents) { alloc, time, rate ->
+            Triple(alloc, time, rate)
+        }.combine(selectedCompetence) { t2Sub, comp ->
+            Pair(t2Sub, comp)
         }) { t1, t2 ->
             ProfitabilityEngine.calculateOverviewMetrics(
                 receivables = t1.first,
                 payments = t1.second,
                 expenses = t1.third,
-                costAllocations = t2.first,
-                timeTrackings = t2.second,
+                costAllocations = t2.first.first,
+                timeTrackings = t2.first.second,
                 clients = allClients.value,
                 contracts = contracts.value,
-                hourlyEconomicRateCents = hourlyEconomicRateCents.value,
-                competenceFilter = t2.third
+                hourlyEconomicRateCents = t2.first.third,
+                competenceFilter = t2.second
             )
         }.stateIn(
             viewModelScope,
@@ -239,35 +241,43 @@ class PhFinanceViewModel(application: Application) : AndroidViewModel(applicatio
 
         serviceProfitabilityList = combine(services, contracts, receivables) { srv, con, rec ->
             Triple(srv, con, rec)
-        }.combine(combine(payments, costAllocations, selectedCompetence) { pay, alloc, comp ->
-            Triple(pay, alloc, comp)
+        }.combine(combine(payments, costAllocations, timeTrackings) { pay, alloc, time ->
+            Triple(pay, alloc, time)
+        }.combine(combine(hourlyEconomicRateCents, selectedCompetence) { rate, comp ->
+            Pair(rate, comp)
+        }) { t2Sub, t3Sub ->
+            Pair(t2Sub, t3Sub)
         }) { t1, t2 ->
             ProfitabilityEngine.calculateServiceSummaries(
                 services = t1.first,
                 contracts = t1.second,
                 receivables = t1.third,
-                payments = t2.first,
-                costAllocations = t2.second,
-                timeTrackings = timeTrackings.value,
-                hourlyEconomicRateCents = hourlyEconomicRateCents.value,
-                competenceFilter = t2.third
+                payments = t2.first.first,
+                costAllocations = t2.first.second,
+                timeTrackings = t2.first.third,
+                hourlyEconomicRateCents = t2.second.first,
+                competenceFilter = t2.second.second
             )
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
         studentProfitabilityList = combine(allClients, contracts, receivables) { cli, con, rec ->
             Triple(cli, con, rec)
-        }.combine(combine(payments, costAllocations, selectedCompetence) { pay, alloc, comp ->
-            Triple(pay, alloc, comp)
+        }.combine(combine(payments, costAllocations, timeTrackings) { pay, alloc, time ->
+            Triple(pay, alloc, time)
+        }.combine(combine(hourlyEconomicRateCents, selectedCompetence) { rate, comp ->
+            Pair(rate, comp)
+        }) { t2Sub, t3Sub ->
+            Pair(t2Sub, t3Sub)
         }) { t1, t2 ->
             ProfitabilityEngine.calculateStudentSummaries(
                 clients = t1.first,
                 contracts = t1.second,
                 receivables = t1.third,
-                payments = t2.first,
-                costAllocations = t2.second,
-                timeTrackings = timeTrackings.value,
-                hourlyEconomicRateCents = hourlyEconomicRateCents.value,
-                competenceFilter = t2.third
+                payments = t2.first.first,
+                costAllocations = t2.first.second,
+                timeTrackings = t2.first.third,
+                hourlyEconomicRateCents = t2.second.first,
+                competenceFilter = t2.second.second
             )
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     }

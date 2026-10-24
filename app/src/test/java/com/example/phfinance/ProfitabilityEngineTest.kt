@@ -751,4 +751,43 @@ class ProfitabilityEngineTest {
         )
         ProfitabilityEngine.validateAllocationLimit(expense, emptyList(), -500L)
     }
+
+    @Test
+    fun testRegression_competenceWithoutRevenues_paymentsInSeptemberSelectedOctober() {
+        val sepReceivable = ReceivableEntity(
+            id = "rec_sep",
+            clientId = "cli_1",
+            contractId = "con_1",
+            competence = "09/2026",
+            dueDate = 0L,
+            originalValueCents = 100000L,
+            netValueCents = 100000L,
+            status = ReceivableStatus.QUITADA
+        )
+        val payments = listOf(
+            PaymentEntity(
+                id = "p_sep",
+                receivableId = "rec_sep",
+                clientId = "cli_1",
+                grossAmountCents = 100000L,
+                feeCents = 0L,
+                netAmountCents = 100000L,
+                destinationAccountId = "acc_main",
+                paymentMethod = PaymentMethod.PIX
+            )
+        )
+
+        val metrics = ProfitabilityEngine.calculateOverviewMetrics(
+            receivables = listOf(sepReceivable),
+            payments = payments,
+            expenses = emptyList(),
+            costAllocations = emptyList(),
+            timeTrackings = emptyList(),
+            clients = listOf(createDummyClient("cli_1", "Aluno 1")),
+            contracts = emptyList(),
+            competenceFilter = "10/2026"
+        )
+
+        assertEquals(0L, metrics.netRevenueCents)
+    }
 }

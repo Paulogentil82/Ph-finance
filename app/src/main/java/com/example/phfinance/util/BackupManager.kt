@@ -286,20 +286,16 @@ object BackupManager {
         backupContent: String,
         password: String,
         dao: PhFinanceDao,
-        database: androidx.room.RoomDatabase? = null
+        database: androidx.room.RoomDatabase
     ): BackupImportResult = withContext(Dispatchers.IO) {
         try {
             val payload = decryptWrapperToPayload(backupContent, password)
             require(payload.version in 1..5) { "Versão de backup inválida ou não suportada: ${payload.version}" }
 
-            if (database != null) {
-                database.runInTransaction {
-                    kotlinx.coroutines.runBlocking {
-                        importPayloadInternal(payload, dao)
-                    }
+            database.runInTransaction {
+                kotlinx.coroutines.runBlocking {
+                    importPayloadInternal(payload, dao)
                 }
-            } else {
-                importPayloadInternal(payload, dao)
             }
 
             BackupImportResult(
@@ -322,18 +318,14 @@ object BackupManager {
         payload: BackupPayload,
         dao: PhFinanceDao,
         successMsg: String,
-        database: androidx.room.RoomDatabase? = null
+        database: androidx.room.RoomDatabase
     ): BackupImportResult = withContext(Dispatchers.IO) {
         try {
             require(payload.version in 1..5) { "Versão de backup inválida ou não suportada: ${payload.version}" }
-            if (database != null) {
-                database.runInTransaction {
-                    kotlinx.coroutines.runBlocking {
-                        importPayloadInternal(payload, dao)
-                    }
+            database.runInTransaction {
+                kotlinx.coroutines.runBlocking {
+                    importPayloadInternal(payload, dao)
                 }
-            } else {
-                importPayloadInternal(payload, dao)
             }
             BackupImportResult(
                 success = true,

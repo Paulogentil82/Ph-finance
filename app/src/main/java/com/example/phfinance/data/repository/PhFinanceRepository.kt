@@ -55,7 +55,7 @@ import kotlin.math.abs
 
 class PhFinanceRepository(
     private val dao: PhFinanceDao,
-    private val database: androidx.room.RoomDatabase? = null
+    private val database: androidx.room.RoomDatabase
 ) {
 
     // --- CLIENTS ---

@@ -268,7 +268,7 @@ object ProfitabilityEngine {
                     netRevenueCents += rec.netValueCents
                 }
             }
-        } else {
+        } else if (competenceFilter == null) {
             payments.forEach { p ->
                 netRevenueCents += (p.grossAmountCents - p.feeCents)
             }

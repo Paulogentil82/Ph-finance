@@ -251,14 +251,17 @@ fun MainAppScaffold(
             },
             onAddReceivable = {
                 showQuickActionModal = false
+                viewModel.triggerAddReceivableForm()
                 selectedTab = 2
             },
             onAddExpense = {
                 showQuickActionModal = false
+                viewModel.triggerAddExpenseForm()
                 selectedTab = 2
             },
             onAddPayment = {
                 showQuickActionModal = false
+                viewModel.triggerAddPaymentForm()
                 selectedTab = 2
             }
         )

@@ -8,7 +8,6 @@ import androidx.activity.viewModels
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -41,7 +40,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
 import com.example.phfinance.ui.components.QuickActionModal
 import com.example.phfinance.ui.screens.AuthScreen
 import com.example.phfinance.ui.screens.ClientsScreen
@@ -219,14 +217,13 @@ fun MainAppScaffold(
             }
         },
         floatingActionButton = {
-            FloatingActionButton(
-                onClick = { showQuickActionModal = true },
-                modifier = Modifier.offset(
-                    y = if (selectedTab == 1 || selectedTab == 2) (-80).dp else 0.dp
-                ),
-                containerColor = EmeraldPrimary
-            ) {
-                Icon(Icons.Default.Add, contentDescription = "Ação Rápida", tint = MaterialTheme.colorScheme.surface)
+            if (selectedTab != 1 && selectedTab != 2) {
+                FloatingActionButton(
+                    onClick = { showQuickActionModal = true },
+                    containerColor = EmeraldPrimary
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = "Ação Rápida", tint = MaterialTheme.colorScheme.surface)
+                }
             }
         }
     ) { innerPadding ->

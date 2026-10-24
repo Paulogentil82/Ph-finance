@@ -217,11 +217,13 @@ fun MainAppScaffold(
             }
         },
         floatingActionButton = {
-            FloatingActionButton(
-                onClick = { showQuickActionModal = true },
-                containerColor = EmeraldPrimary
-            ) {
-                Icon(Icons.Default.Add, contentDescription = "Ação Rápida", tint = MaterialTheme.colorScheme.surface)
+            if (selectedTab != 1 && selectedTab != 2) {
+                FloatingActionButton(
+                    onClick = { showQuickActionModal = true },
+                    containerColor = EmeraldPrimary
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = "Ação Rápida", tint = MaterialTheme.colorScheme.surface)
+                }
             }
         }
     ) { innerPadding ->

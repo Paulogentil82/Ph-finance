@@ -69,6 +69,7 @@ class QuickActionNavigationTest {
         compose.runOnIdle { assertFalse(viewModel.triggerOpenAddReceivable.value) }
         compose.onNodeWithText("Cancelar").performClick()
         compose.onNodeWithText("A Pagar").performClick()
+        compose.onNodeWithText("Início").performClick()
         choose("Criar Cobrança Avulsa")
         assertFinancialTab("Cobranças")
         compose.onNodeWithText("Criar Cobrança Avulsa").assertIsDisplayed()
@@ -81,6 +82,7 @@ class QuickActionNavigationTest {
         compose.onNodeWithText("Registrar Despesa").assertIsDisplayed()
         compose.runOnIdle { assertFalse(viewModel.triggerOpenAddExpense.value) }
         compose.onNodeWithText("Cancelar").performClick()
+        compose.onNodeWithText("Início").performClick()
         choose("Registrar Despesa")
         assertFinancialTab("A Pagar")
         compose.onNodeWithText("Registrar Despesa").assertIsDisplayed()
@@ -88,9 +90,7 @@ class QuickActionNavigationTest {
 
     @Test
     fun paymentWithoutReceivablesShowsFeedbackFromBillingCenter() {
-        // Fresh Robolectric storage has no financial records. Open another subtab first.
-        compose.onNodeWithText("Financeiro").performClick()
-        compose.onNodeWithText("A Pagar").performClick()
+        // Fresh Robolectric storage has no financial records.
         choose("Registrar Recebimento (Baixa)")
         assertFinancialTab("Cobranças")
         compose.runOnIdle {

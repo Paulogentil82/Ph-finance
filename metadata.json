@@ -1,0 +1,7 @@
+{
+  "name": "PH Finance",
+  "description": "Gestão financeira e administrativa para consultoria PH Personal",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+

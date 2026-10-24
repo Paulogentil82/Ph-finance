@@ -1,0 +1,55 @@
+{
+  "schemaVersion": "1.0",
+  "collections": {
+    "users": {
+      "documentId": "{userId}",
+      "description": "Authenticated owners of the PH Personal business",
+      "fields": {
+        "email": { "type": "string", "required": true },
+        "displayName": { "type": "string", "required": true },
+        "role": { "type": "string", "required": true },
+        "createdAt": { "type": "timestamp", "required": true }
+      },
+      "subcollections": {
+        "clients": {
+          "documentId": "{clientId}",
+          "description": "Clients registered under PH Personal",
+          "fields": {
+            "fullName": { "type": "string", "required": true },
+            "phone": { "type": "string", "required": true },
+            "clientType": { "type": "string", "required": true },
+            "agreedValueCents": { "type": "number", "required": true },
+            "isArchived": { "type": "boolean", "required": true },
+            "userId": { "type": "string", "required": true }
+          }
+        },
+        "receivables": {
+          "documentId": "{receivableId}",
+          "description": "Accounts receivable and monthly dues",
+          "fields": {
+            "clientId": { "type": "string", "required": true },
+            "competence": { "type": "string", "required": true },
+            "dueDate": { "type": "number", "required": true },
+            "netValueCents": { "type": "number", "required": true },
+            "receivedValueCents": { "type": "number", "required": true },
+            "status": { "type": "string", "required": true },
+            "userId": { "type": "string", "required": true }
+          }
+        },
+        "expenses": {
+          "documentId": "{expenseId}",
+          "description": "Accounts payable and business expenses",
+          "fields": {
+            "description": { "type": "string", "required": true },
+            "category": { "type": "string", "required": true },
+            "valueCents": { "type": "number", "required": true },
+            "dueDate": { "type": "number", "required": true },
+            "status": { "type": "string", "required": true },
+            "isOwnerPersonalWithdrawal": { "type": "boolean", "required": true },
+            "userId": { "type": "string", "required": true }
+          }
+        }
+      }
+    }
+  }
+}

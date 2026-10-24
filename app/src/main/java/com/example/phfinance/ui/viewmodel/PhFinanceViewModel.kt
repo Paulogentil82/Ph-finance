@@ -215,18 +215,21 @@ class PhFinanceViewModel(application: Application) : AndroidViewModel(applicatio
             com.example.phfinance.util.GrowthSimulatorEngine.calculateProjections(updatedParams)
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-        profitabilityMetrics = combine(
-            receivables, payments, expenses, costAllocations, timeTrackings
-        ) { rec, pay, exp, alloc, time ->
+        profitabilityMetrics = combine(receivables, payments, expenses) { rec, pay, exp ->
+            Triple(rec, pay, exp)
+        }.combine(combine(costAllocations, timeTrackings, selectedCompetence) { alloc, time, comp ->
+            Triple(alloc, time, comp)
+        }) { t1, t2 ->
             ProfitabilityEngine.calculateOverviewMetrics(
-                receivables = rec,
-                payments = pay,
-                expenses = exp,
-                costAllocations = alloc,
-                timeTrackings = time,
+                receivables = t1.first,
+                payments = t1.second,
+                expenses = t1.third,
+                costAllocations = t2.first,
+                timeTrackings = t2.second,
                 clients = allClients.value,
                 contracts = contracts.value,
-                hourlyEconomicRateCents = hourlyEconomicRateCents.value
+                hourlyEconomicRateCents = hourlyEconomicRateCents.value,
+                competenceFilter = t2.third
             )
         }.stateIn(
             viewModelScope,
@@ -234,31 +237,37 @@ class PhFinanceViewModel(application: Application) : AndroidViewModel(applicatio
             ProfitabilityMetricResult()
         )
 
-        serviceProfitabilityList = combine(
-            services, contracts, receivables, payments, costAllocations
-        ) { srv, con, rec, pay, alloc ->
+        serviceProfitabilityList = combine(services, contracts, receivables) { srv, con, rec ->
+            Triple(srv, con, rec)
+        }.combine(combine(payments, costAllocations, selectedCompetence) { pay, alloc, comp ->
+            Triple(pay, alloc, comp)
+        }) { t1, t2 ->
             ProfitabilityEngine.calculateServiceSummaries(
-                services = srv,
-                contracts = con,
-                receivables = rec,
-                payments = pay,
-                costAllocations = alloc,
+                services = t1.first,
+                contracts = t1.second,
+                receivables = t1.third,
+                payments = t2.first,
+                costAllocations = t2.second,
                 timeTrackings = timeTrackings.value,
-                hourlyEconomicRateCents = hourlyEconomicRateCents.value
+                hourlyEconomicRateCents = hourlyEconomicRateCents.value,
+                competenceFilter = t2.third
             )
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-        studentProfitabilityList = combine(
-            allClients, contracts, receivables, payments, costAllocations
-        ) { cli, con, rec, pay, alloc ->
+        studentProfitabilityList = combine(allClients, contracts, receivables) { cli, con, rec ->
+            Triple(cli, con, rec)
+        }.combine(combine(payments, costAllocations, selectedCompetence) { pay, alloc, comp ->
+            Triple(pay, alloc, comp)
+        }) { t1, t2 ->
             ProfitabilityEngine.calculateStudentSummaries(
-                clients = cli,
-                contracts = con,
-                receivables = rec,
-                payments = pay,
-                costAllocations = alloc,
+                clients = t1.first,
+                contracts = t1.second,
+                receivables = t1.third,
+                payments = t2.first,
+                costAllocations = t2.second,
                 timeTrackings = timeTrackings.value,
-                hourlyEconomicRateCents = hourlyEconomicRateCents.value
+                hourlyEconomicRateCents = hourlyEconomicRateCents.value,
+                competenceFilter = t2.third
             )
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     }
@@ -505,7 +514,7 @@ class PhFinanceViewModel(application: Application) : AndroidViewModel(applicatio
     fun restoreBackup(context: android.content.Context, backupContent: String, password: String, onResult: (com.example.phfinance.util.BackupImportResult) -> Unit) {
         viewModelScope.launch {
             val db = AppDatabase.getDatabase(context)
-            val res = com.example.phfinance.util.BackupManager.restoreEncryptedBackup(backupContent, password, db.phFinanceDao())
+            val res = com.example.phfinance.util.BackupManager.restoreEncryptedBackup(backupContent, password, db.phFinanceDao(), db)
             onResult(res)
         }
     }

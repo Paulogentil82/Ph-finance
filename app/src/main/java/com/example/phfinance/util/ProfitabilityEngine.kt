@@ -345,7 +345,7 @@ object ProfitabilityEngine {
             val serviceContracts = contracts.filter { it.serviceId == service.id }
             val contractIds = serviceContracts.map { it.id }.toSet()
 
-            val serviceReceivables = filteredReceivables.filter { it.contractId in contractIds || contractIds.isEmpty() }
+            val serviceReceivables = filteredReceivables.filter { it.contractId in contractIds }
             var netRevenueCents = 0L
             serviceReceivables.forEach { rec ->
                 val pList = paymentMap[rec.id] ?: emptyList()
@@ -356,15 +356,6 @@ object ProfitabilityEngine {
                 } else if (rec.status == ReceivableStatus.QUITADA || rec.status.name == "RECEBIDO") {
                     netRevenueCents += rec.netValueCents
                 }
-            }
-
-            // Fallback to direct payments if serviceReceivables empty
-            if (serviceReceivables.isEmpty()) {
-                val servicePayments = payments.filter { p ->
-                    val rec = receivables.find { it.id == p.receivableId }
-                    rec?.contractId in contractIds
-                }
-                netRevenueCents += servicePayments.sumOf { it.grossAmountCents - it.feeCents }
             }
 
             val filteredAllocations = if (competenceFilter != null) {
@@ -453,7 +444,7 @@ object ProfitabilityEngine {
             val clientContracts = contracts.filter { it.clientId == client.id }
             val contractIds = clientContracts.map { it.id }.toSet()
 
-            val clientReceivables = filteredReceivables.filter { it.clientId == client.id || it.contractId in contractIds || contractIds.isEmpty() }
+            val clientReceivables = filteredReceivables.filter { it.clientId == client.id || it.contractId in contractIds }
 
             val contractedRevenueCents = clientReceivables.sumOf { it.originalValueCents }
             var receivedRevenueCents = 0L
@@ -466,15 +457,6 @@ object ProfitabilityEngine {
                 } else if (rec.status == ReceivableStatus.QUITADA || rec.status.name == "RECEBIDO") {
                     receivedRevenueCents += (rec.receivedValueCents.takeIf { it > 0 } ?: rec.originalValueCents)
                 }
-            }
-
-            if (clientReceivables.isEmpty()) {
-                val clientPayments = payments.filter { p ->
-                    val rec = receivables.find { it.id == p.receivableId }
-                    rec?.clientId == client.id || rec?.contractId in contractIds
-                }
-                receivedRevenueCents += clientPayments.sumOf { it.grossAmountCents }
-                feesCents += clientPayments.sumOf { it.feeCents }
             }
 
             val discountsCents = clientReceivables.sumOf { it.discountCents }

@@ -37,6 +37,21 @@ import com.example.phfinance.data.local.BankImportEntity
 import com.example.phfinance.data.local.BankTransactionEntity
 import com.example.phfinance.data.local.ReconciliationAuditEntity
 import com.example.phfinance.data.local.ReconciliationEntity
+import com.example.phfinance.data.local.CostAllocationEntity
+import com.example.phfinance.data.local.ApportionmentPolicyEntity
+import com.example.phfinance.data.local.TimeTrackingEntity
+import com.example.phfinance.data.local.PricingSimulationScenarioEntity
+import com.example.phfinance.data.model.ApportionmentMethod
+import com.example.phfinance.data.model.ApportionmentPreviewItem
+import com.example.phfinance.data.model.CostAllocationType
+import com.example.phfinance.data.model.PricingScenarioResult
+import com.example.phfinance.data.model.ProfitabilityMetricResult
+import com.example.phfinance.data.model.ServiceProfitabilitySummary
+import com.example.phfinance.data.model.StudentProfitabilitySummary
+import com.example.phfinance.util.ProfitabilityEngine
+import com.example.phfinance.util.PricingSimulatorEngine
+import com.example.phfinance.util.ReportExporter
+import android.content.Context
 import com.example.phfinance.data.model.BankTransactionStatus
 import com.example.phfinance.data.model.CsvConfig
 import com.example.phfinance.data.model.ReconciliationMatchSuggestion
@@ -95,6 +110,18 @@ class PhFinanceViewModel(application: Application) : AndroidViewModel(applicatio
     val isReconciling = MutableStateFlow(false)
     val reconciliationFeedback = MutableStateFlow<String?>(null)
 
+    // Profitability state flows (Etapa 3.2)
+    val costAllocations: StateFlow<List<CostAllocationEntity>>
+    val apportionmentPolicies: StateFlow<List<ApportionmentPolicyEntity>>
+    val timeTrackings: StateFlow<List<TimeTrackingEntity>>
+    val pricingSimulations: StateFlow<List<PricingSimulationScenarioEntity>>
+    val hourlyEconomicRateCents = MutableStateFlow(5000L)
+    val selectedProfitabilityServiceId = MutableStateFlow<String?>(null)
+    val selectedProfitabilityClientId = MutableStateFlow<String?>(null)
+    val profitabilityMetrics: StateFlow<ProfitabilityMetricResult>
+    val serviceProfitabilityList: StateFlow<List<ServiceProfitabilitySummary>>
+    val studentProfitabilityList: StateFlow<List<StudentProfitabilitySummary>>
+
     init {
         val db = AppDatabase.getDatabase(application)
         repository = PhFinanceRepository(db.phFinanceDao())
@@ -121,6 +148,11 @@ class PhFinanceViewModel(application: Application) : AndroidViewModel(applicatio
         bankTransactions = repository.observeAllBankTransactions().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
         reconciliations = repository.observeAllReconciliations().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
         reconciliationAudits = repository.observeAllReconciliationAudits().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+        costAllocations = repository.observeAllCostAllocations().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        apportionmentPolicies = repository.observeApportionmentPolicies().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        timeTrackings = repository.observeAllTimeTrackings().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        pricingSimulations = repository.observeAllPricingSimulations().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
         val coreFlow = combine(accounts, receivables, payments, expenses, contracts) { acc, rec, pay, exp, con ->
             Tuple5(acc, rec, pay, exp, con)
@@ -181,6 +213,53 @@ class PhFinanceViewModel(application: Application) : AndroidViewModel(applicatio
                 ticketMedioCents = metrics.ticketMedioCents.takeIf { it > 0 } ?: params.ticketMedioCents
             )
             com.example.phfinance.util.GrowthSimulatorEngine.calculateProjections(updatedParams)
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+        profitabilityMetrics = combine(
+            receivables, payments, expenses, costAllocations, timeTrackings
+        ) { rec, pay, exp, alloc, time ->
+            ProfitabilityEngine.calculateOverviewMetrics(
+                receivables = rec,
+                payments = pay,
+                expenses = exp,
+                costAllocations = alloc,
+                timeTrackings = time,
+                clients = allClients.value,
+                contracts = contracts.value,
+                hourlyEconomicRateCents = hourlyEconomicRateCents.value
+            )
+        }.stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5000),
+            ProfitabilityMetricResult()
+        )
+
+        serviceProfitabilityList = combine(
+            services, contracts, receivables, payments, costAllocations
+        ) { srv, con, rec, pay, alloc ->
+            ProfitabilityEngine.calculateServiceSummaries(
+                services = srv,
+                contracts = con,
+                receivables = rec,
+                payments = pay,
+                costAllocations = alloc,
+                timeTrackings = timeTrackings.value,
+                hourlyEconomicRateCents = hourlyEconomicRateCents.value
+            )
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+        studentProfitabilityList = combine(
+            allClients, contracts, receivables, payments, costAllocations
+        ) { cli, con, rec, pay, alloc ->
+            ProfitabilityEngine.calculateStudentSummaries(
+                clients = cli,
+                contracts = con,
+                receivables = rec,
+                payments = pay,
+                costAllocations = alloc,
+                timeTrackings = timeTrackings.value,
+                hourlyEconomicRateCents = hourlyEconomicRateCents.value
+            )
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     }
 
@@ -701,5 +780,163 @@ class PhFinanceViewModel(application: Application) : AndroidViewModel(applicatio
             clearMatchSuggestion()
         }
     }
+
+    // --- ETAPA 3.2: RENTABILIDADE & PRECIFICAÇÃO ACTIONS ---
+
+    fun saveCostAllocation(
+        allocation: CostAllocationEntity,
+        onDone: (Boolean, String) -> Unit
+    ) {
+        viewModelScope.launch {
+            try {
+                repository.saveCostAllocation(allocation)
+                onDone(true, "Custo atribuído com sucesso.")
+            } catch (e: Exception) {
+                onDone(false, e.localizedMessage ?: "Erro ao atribuir custo.")
+            }
+        }
+    }
+
+    fun deleteCostAllocation(
+        id: String,
+        onDone: (Boolean, String) -> Unit
+    ) {
+        viewModelScope.launch {
+            try {
+                repository.deleteCostAllocation(id)
+                onDone(true, "Atribuição de custo removida.")
+            } catch (e: Exception) {
+                onDone(false, e.localizedMessage ?: "Erro ao remover atribuição.")
+            }
+        }
+    }
+
+    fun saveApportionmentPolicy(policy: ApportionmentPolicyEntity) {
+        viewModelScope.launch {
+            repository.saveApportionmentPolicy(policy)
+        }
+    }
+
+    fun deleteApportionmentPolicy(id: String) {
+        viewModelScope.launch {
+            repository.deleteApportionmentPolicy(id)
+        }
+    }
+
+    fun applyApportionment(
+        policy: ApportionmentPolicyEntity,
+        expenseId: String,
+        competence: String,
+        previewItems: List<ApportionmentPreviewItem>,
+        notes: String,
+        onDone: (Boolean, String) -> Unit
+    ) {
+        viewModelScope.launch {
+            try {
+                repository.applyApportionment(policy, expenseId, competence, previewItems, notes)
+                onDone(true, "Rateio de despesas aplicado com sucesso.")
+            } catch (e: Exception) {
+                onDone(false, e.localizedMessage ?: "Erro ao aplicar rateio.")
+            }
+        }
+    }
+
+    fun saveTimeTracking(
+        entry: TimeTrackingEntity,
+        onDone: (Boolean, String) -> Unit
+    ) {
+        viewModelScope.launch {
+            try {
+                repository.saveTimeTracking(entry)
+                onDone(true, "Horas de atendimento registradas com sucesso.")
+            } catch (e: Exception) {
+                onDone(false, e.localizedMessage ?: "Erro ao registrar horas.")
+            }
+        }
+    }
+
+    fun deleteTimeTracking(id: String) {
+        viewModelScope.launch {
+            repository.deleteTimeTracking(id)
+        }
+    }
+
+    fun savePricingSimulation(simulation: PricingSimulationScenarioEntity) {
+        viewModelScope.launch {
+            repository.savePricingSimulation(simulation)
+        }
+    }
+
+    fun deletePricingSimulation(id: String) {
+        viewModelScope.launch {
+            repository.deletePricingSimulation(id)
+        }
+    }
+
+    fun simulatePricingScenarios(
+        serviceId: String,
+        serviceName: String,
+        currentPriceCents: Long,
+        proposedPriceCents: Long,
+        currentClientsCount: Int,
+        directCostPerClientCents: Long,
+        allocatedExpensePerClientCents: Long,
+        averageHoursPerClient: Double,
+        baseChurnPercent: Double,
+        targetMarginPercent: Double
+    ): List<PricingScenarioResult> {
+        return PricingSimulatorEngine.generateScenarios(
+            serviceId = serviceId,
+            serviceName = serviceName,
+            currentPriceCents = currentPriceCents,
+            proposedPriceCents = proposedPriceCents,
+            currentClientsCount = currentClientsCount,
+            directCostPerClientCents = directCostPerClientCents,
+            allocatedExpensePerClientCents = allocatedExpensePerClientCents,
+            averageHoursPerClient = averageHoursPerClient,
+            baseChurnPercent = baseChurnPercent,
+            targetMarginPercent = targetMarginPercent
+        )
+    }
+
+    fun exportProfitabilityPdf(context: Context) {
+        val bizName = settings.value?.businessName ?: "PH Personal Trainer"
+        ReportExporter.exportProfitabilityPdf(
+            context = context,
+            overview = profitabilityMetrics.value,
+            services = serviceProfitabilityList.value,
+            competence = selectedCompetence.value,
+            businessName = bizName
+        )
+    }
+
+    fun exportServiceProfitabilityCsv(context: Context) {
+        ReportExporter.exportServiceProfitabilityCsv(
+            context = context,
+            services = serviceProfitabilityList.value,
+            competence = selectedCompetence.value
+        )
+    }
+
+    fun exportStudentProfitabilityCsv(context: Context) {
+        ReportExporter.exportStudentProfitabilityCsv(
+            context = context,
+            students = studentProfitabilityList.value,
+            competence = selectedCompetence.value
+        )
+    }
+
+    fun exportPricingSimulationCsv(
+        context: Context,
+        serviceName: String,
+        scenarios: List<PricingScenarioResult>
+    ) {
+        ReportExporter.exportPricingSimulationCsv(
+            context = context,
+            serviceName = serviceName,
+            scenarios = scenarios
+        )
+    }
 }
+
 

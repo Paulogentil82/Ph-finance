@@ -37,9 +37,13 @@ import java.util.UUID
         BankImportEntity::class,
         BankTransactionEntity::class,
         ReconciliationEntity::class,
-        ReconciliationAuditEntity::class
+        ReconciliationAuditEntity::class,
+        CostAllocationEntity::class,
+        ApportionmentPolicyEntity::class,
+        TimeTrackingEntity::class,
+        PricingSimulationScenarioEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -201,6 +205,95 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `cost_allocations` (
+                        `id` TEXT NOT NULL,
+                        `expenseId` TEXT NOT NULL,
+                        `allocationType` TEXT NOT NULL,
+                        `contractId` TEXT,
+                        `clientId` TEXT,
+                        `serviceId` TEXT,
+                        `competence` TEXT NOT NULL,
+                        `allocatedAmountCents` INTEGER NOT NULL,
+                        `allocationPercentage` REAL NOT NULL,
+                        `notes` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`),
+                        FOREIGN KEY(`expenseId`) REFERENCES `expenses`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_cost_allocations_expenseId` ON `cost_allocations` (`expenseId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_cost_allocations_contractId` ON `cost_allocations` (`contractId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_cost_allocations_clientId` ON `cost_allocations` (`clientId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_cost_allocations_serviceId` ON `cost_allocations` (`serviceId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_cost_allocations_competence` ON `cost_allocations` (`competence`)")
+
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `apportionment_policies` (
+                        `id` TEXT NOT NULL,
+                        `name` TEXT NOT NULL,
+                        `policyType` TEXT NOT NULL,
+                        `validFrom` TEXT NOT NULL,
+                        `validTo` TEXT,
+                        `targetCategory` TEXT,
+                        `notes` TEXT NOT NULL,
+                        `isActive` INTEGER NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                """.trimIndent())
+
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `time_trackings` (
+                        `id` TEXT NOT NULL,
+                        `clientId` TEXT,
+                        `contractId` TEXT,
+                        `serviceId` TEXT,
+                        `date` INTEGER NOT NULL,
+                        `competence` TEXT NOT NULL,
+                        `durationMinutes` INTEGER NOT NULL,
+                        `activityType` TEXT NOT NULL,
+                        `hourlyEconomicRateCents` INTEGER NOT NULL,
+                        `notes` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_time_trackings_clientId` ON `time_trackings` (`clientId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_time_trackings_contractId` ON `time_trackings` (`contractId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_time_trackings_serviceId` ON `time_trackings` (`serviceId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_time_trackings_competence` ON `time_trackings` (`competence`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_time_trackings_date` ON `time_trackings` (`date`)")
+
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `pricing_simulations` (
+                        `id` TEXT NOT NULL,
+                        `serviceId` TEXT NOT NULL,
+                        `scenarioName` TEXT NOT NULL,
+                        `scenarioType` TEXT NOT NULL,
+                        `currentPriceCents` INTEGER NOT NULL,
+                        `proposedPriceCents` INTEGER NOT NULL,
+                        `currentClientsCount` INTEGER NOT NULL,
+                        `directCostPerClientCents` INTEGER NOT NULL,
+                        `allocatedExpensePerClientCents` INTEGER NOT NULL,
+                        `averageDedicatedHoursPerClient` REAL NOT NULL,
+                        `hypotheticalChurnPercent` REAL NOT NULL,
+                        `targetMarginPercent` REAL NOT NULL,
+                        `projectedRevenueCents` INTEGER NOT NULL,
+                        `projectedContributionMarginCents` INTEGER NOT NULL,
+                        `projectedOperatingResultCents` INTEGER NOT NULL,
+                        `breakEvenClientsCount` INTEGER NOT NULL,
+                        `notes` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_pricing_simulations_serviceId` ON `pricing_simulations` (`serviceId`)")
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -208,7 +301,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "ph_finance_db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                     .addCallback(DatabaseCallback(context.applicationContext))
                     .build()
                 INSTANCE = instance

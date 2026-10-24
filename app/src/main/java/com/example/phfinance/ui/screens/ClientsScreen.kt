@@ -40,6 +40,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -58,6 +60,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import com.example.phfinance.data.local.ClientEntity
 import com.example.phfinance.data.model.CurrencyUtils
+import com.example.phfinance.data.model.ReceivableStatus
 import com.example.phfinance.ui.theme.EmeraldPrimary
 import com.example.phfinance.ui.theme.StatusRed
 import com.example.phfinance.ui.theme.StatusYellow
@@ -194,6 +197,7 @@ fun ClientsScreen(viewModel: PhFinanceViewModel) {
         ) {
             ClientDetailSheetContent(
                 client = client,
+                viewModel = viewModel,
                 onEdit = {
                     editingClient = client
                     selectedClientDetail = null
@@ -420,14 +424,73 @@ fun ClientFormDialog(
 @Composable
 fun ClientDetailSheetContent(
     client: ClientEntity,
+    viewModel: PhFinanceViewModel,
     onEdit: () -> Unit,
     onArchiveToggle: () -> Unit,
     onWhatsAppClick: () -> Unit
 ) {
+    var sheetTab by remember { mutableStateOf(0) } // 0: Cadastro, 1: Análise Financeira
+    var isAccumulated by remember { mutableStateOf(false) }
+
+    val competence by viewModel.selectedCompetence.collectAsState()
+    val receivables by viewModel.receivables.collectAsState()
+    val payments by viewModel.payments.collectAsState()
+    val contracts by viewModel.contracts.collectAsState()
+    val services by viewModel.services.collectAsState()
+    val costAllocations by viewModel.costAllocations.collectAsState()
+    val timeTrackings by viewModel.timeTrackings.collectAsState()
+
+    val clientContracts = contracts.filter { it.clientId == client.id }
+    val contractIds = clientContracts.map { it.id }.toSet()
+    val serviceMap = services.associateBy { it.id }
+
+    val allClientReceivables = receivables.filter { it.clientId == client.id || it.contractId in contractIds }
+    val filteredReceivables = if (isAccumulated) {
+        allClientReceivables
+    } else {
+        allClientReceivables.filter { it.competence == competence }
+    }
+
+    val paymentMap = payments.associateBy { it.receivableId }
+
+    val contractedRevenue = filteredReceivables.sumOf { it.originalValueCents }
+    val receivedRevenue = filteredReceivables.sumOf { rec ->
+        paymentMap[rec.id]?.grossAmountCents ?: if (rec.status == ReceivableStatus.QUITADA || rec.status.name == "RECEBIDO") rec.receivedValueCents.takeIf { it > 0 } ?: rec.originalValueCents else 0L
+    }
+    val pendingRevenue = filteredReceivables.filter { it.status.name == "PENDENTE" || it.status.name == "ATRASADO" }.sumOf { it.netValueCents }
+    val discounts = filteredReceivables.sumOf { it.discountCents }
+    val fees = filteredReceivables.sumOf { rec -> paymentMap[rec.id]?.feeCents ?: 0L }
+
+    val clientAllocations = costAllocations.filter {
+        (it.clientId == client.id || it.contractId in contractIds) &&
+                (isAccumulated || it.competence == competence)
+    }
+    val directCosts = clientAllocations
+        .filter { it.allocationType != com.example.phfinance.data.model.CostAllocationType.INDIRETO_RATEADO }
+        .sumOf { it.allocatedAmountCents }
+    val indirectCosts = clientAllocations
+        .filter { it.allocationType == com.example.phfinance.data.model.CostAllocationType.INDIRETO_RATEADO }
+        .sumOf { it.allocatedAmountCents }
+
+    val netEffectiveRevenue = receivedRevenue - fees
+    val contributionMargin = netEffectiveRevenue - directCosts
+    val marginPercent = if (netEffectiveRevenue > 0) (contributionMargin.toDouble() / netEffectiveRevenue.toDouble()) * 100.0 else 0.0
+    val managerialResult = contributionMargin - indirectCosts
+
+    val clientTimeTrackings = timeTrackings.filter {
+        (it.clientId == client.id || it.contractId in contractIds) &&
+                (isAccumulated || it.competence == competence)
+    }
+    val dedicatedMinutes = clientTimeTrackings.sumOf { it.durationMinutes }
+    val dedicatedHours = dedicatedMinutes / 60.0
+    val revenuePerHour = if (dedicatedHours > 0.0) (netEffectiveRevenue / dedicatedHours).toLong() else 0L
+    val economicCostOfTime = (dedicatedHours * 5000L).toLong()
+    val economicResult = managerialResult - economicCostOfTime
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(24.dp)
+            .padding(horizontal = 20.dp, vertical = 16.dp)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -448,50 +511,200 @@ fun ClientDetailSheetContent(
             }
 
             IconButton(onClick = onWhatsAppClick) {
-                Icon(Icons.Default.Send, contentDescription = null, tint = EmeraldPrimary)
+                Icon(Icons.Default.Send, contentDescription = "WhatsApp", tint = EmeraldPrimary)
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
-        Card(
-            shape = RoundedCornerShape(12.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text("Resumo Financeiro Contratado", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(CurrencyUtils.formatCents(client.agreedValueCents), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                Spacer(modifier = Modifier.height(4.dp))
-                Text("Vencimento no dia ${client.dueDay} de cada mês", style = MaterialTheme.typography.bodyMedium)
-            }
+        TabRow(selectedTabIndex = sheetTab) {
+            Tab(selected = sheetTab == 0, onClick = { sheetTab = 0 }, text = { Text("Dados do Aluno") })
+            Tab(selected = sheetTab == 1, onClick = { sheetTab = 1 }, text = { Text("Análise Financeira") })
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(14.dp))
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            OutlinedButton(
-                onClick = onEdit,
-                modifier = Modifier.weight(1f)
+        if (sheetTab == 0) {
+            Card(
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Icon(Icons.Default.Edit, contentDescription = null)
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("Editar")
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("Resumo Financeiro Contratado", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(CurrencyUtils.formatCents(client.agreedValueCents), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text("Vencimento no dia ${client.dueDay} de cada mês", style = MaterialTheme.typography.bodyMedium)
+                }
             }
 
-            Button(
-                onClick = onArchiveToggle,
-                modifier = Modifier.weight(1f)
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Icon(
-                    if (client.isArchived) Icons.Default.Unarchive else Icons.Default.Archive,
-                    contentDescription = null
+                OutlinedButton(
+                    onClick = onEdit,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Default.Edit, contentDescription = null)
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Editar")
+                }
+
+                Button(
+                    onClick = onArchiveToggle,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(
+                        if (client.isArchived) Icons.Default.Unarchive else Icons.Default.Archive,
+                        contentDescription = null
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(if (client.isArchived) "Reativar" else "Arquivar")
+                }
+            }
+        } else {
+            // ABA: ANÁLISE FINANCEIRA INDIVIDUAL DO ALUNO
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = if (isAccumulated) "Período: Acumulado Geral" else "Período: Competência Atual ($competence)",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold
                 )
-                Spacer(modifier = Modifier.width(4.dp))
-                Text(if (client.isArchived) "Reativar" else "Arquivar")
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    FilterChip(
+                        selected = !isAccumulated,
+                        onClick = { isAccumulated = false },
+                        label = { Text("Mensal") }
+                    )
+                    FilterChip(
+                        selected = isAccumulated,
+                        onClick = { isAccumulated = true },
+                        label = { Text("Acumulado") }
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth().height(340.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                item {
+                    Card(
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            Text("Retorno & Margem de Contribuição", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Receita Contratada:", style = MaterialTheme.typography.bodySmall)
+                                Text(CurrencyUtils.formatCents(contractedRevenue), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                            }
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Receita Efetivamente Recebida:", style = MaterialTheme.typography.bodySmall)
+                                Text(CurrencyUtils.formatCents(receivedRevenue), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = EmeraldPrimary)
+                            }
+                            if (pendingRevenue > 0L) {
+                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                    Text("Valores Pendentes:", style = MaterialTheme.typography.bodySmall)
+                                    Text(CurrencyUtils.formatCents(pendingRevenue), style = MaterialTheme.typography.bodySmall, color = StatusYellow)
+                                }
+                            }
+                            if (discounts > 0L) {
+                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                    Text("Descontos Concedidos:", style = MaterialTheme.typography.bodySmall)
+                                    Text(CurrencyUtils.formatCents(discounts), style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                            if (fees > 0L) {
+                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                    Text("Taxas Financeiras:", style = MaterialTheme.typography.bodySmall)
+                                    Text(CurrencyUtils.formatCents(fees), style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("(-) Custos Diretos Associados:", style = MaterialTheme.typography.bodySmall)
+                                Text(CurrencyUtils.formatCents(directCosts), style = MaterialTheme.typography.bodySmall, color = StatusRed)
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("(=) Margem de Contribuição:", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                                Text("${CurrencyUtils.formatCents(contributionMargin)} (${String.format("%.1f%%", marginPercent)})", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = EmeraldPrimary)
+                            }
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("(-) Custos Indiretos Alocados:", style = MaterialTheme.typography.bodySmall)
+                                Text(CurrencyUtils.formatCents(indirectCosts), style = MaterialTheme.typography.bodySmall, color = StatusYellow)
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("(=) Resultado Gerencial:", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                                Text(CurrencyUtils.formatCents(managerialResult), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = if (managerialResult >= 0) EmeraldPrimary else StatusRed)
+                            }
+                        }
+                    }
+                }
+
+                item {
+                    Card(
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            Text("Produtividade do Atendimento", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Tempo Dedicado:", style = MaterialTheme.typography.bodySmall)
+                                Text("${dedicatedMinutes} min (${String.format("%.1fh", dedicatedHours)})", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                            }
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Receita Média / Hora:", style = MaterialTheme.typography.bodySmall)
+                                Text(CurrencyUtils.formatCents(revenuePerHour), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = EmeraldPrimary)
+                            }
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Custo Econômico do Tempo (Oportunidade):", style = MaterialTheme.typography.bodySmall)
+                                Text(CurrencyUtils.formatCents(economicCostOfTime), style = MaterialTheme.typography.bodySmall, color = StatusYellow)
+                            }
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Resultado Econômico:", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                                Text(CurrencyUtils.formatCents(economicResult), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+
+                item {
+                    Card(
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Text("Diretriz de Decisão Administrativa", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "Informações objetivas de retorno contratual. A margem de contribuição expressa o valor residual gerado para cobertura dos custos fixos. Utilize para calibrar a grade de horários, reajustes e estratégias de retenção.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
             }
         }
     }

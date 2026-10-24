@@ -36,6 +36,16 @@ import com.example.phfinance.data.model.ReceivableStatus
 import com.example.phfinance.data.model.ReconciliationMatchSuggestion
 import com.example.phfinance.data.model.ReconciliationType
 import com.example.phfinance.util.reconciliation.ReconciliationEngine
+import com.example.phfinance.data.local.CostAllocationEntity
+import com.example.phfinance.data.local.ApportionmentPolicyEntity
+import com.example.phfinance.data.local.TimeTrackingEntity
+import com.example.phfinance.data.local.PricingSimulationScenarioEntity
+import com.example.phfinance.data.model.ApportionmentMethod
+import com.example.phfinance.data.model.ApportionmentPreviewItem
+import com.example.phfinance.data.model.CostAllocationType
+import com.example.phfinance.data.model.PricingScenarioResult
+import com.example.phfinance.util.ProfitabilityEngine
+import com.example.phfinance.util.PricingSimulatorEngine
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import java.util.Calendar
@@ -1058,4 +1068,147 @@ class PhFinanceRepository(private val dao: PhFinanceDao) {
             reconciliationId = null
         )
     }
+
+    // --- ETAPA 3.2: RENTABILIDADE E CUSTOS ---
+
+    fun observeCostAllocationsByCompetence(competence: String): Flow<List<CostAllocationEntity>> =
+        dao.observeCostAllocationsByCompetence(competence)
+
+    fun observeCostAllocationsByContract(contractId: String): Flow<List<CostAllocationEntity>> =
+        dao.observeCostAllocationsByContract(contractId)
+
+    fun observeCostAllocationsByClient(clientId: String): Flow<List<CostAllocationEntity>> =
+        dao.observeCostAllocationsByClient(clientId)
+
+    fun observeCostAllocationsByExpense(expenseId: String): Flow<List<CostAllocationEntity>> =
+        dao.observeCostAllocationsByExpense(expenseId)
+
+    fun observeAllCostAllocations(): Flow<List<CostAllocationEntity>> =
+        dao.observeAllCostAllocations()
+
+    suspend fun saveCostAllocation(allocation: CostAllocationEntity) {
+        // 1. Verificar se a competência está fechada em definitivo
+        val closure = dao.getClosureByCompetence(allocation.competence)
+        if (closure != null && closure.status == "DEFINITIVO") {
+            throw IllegalStateException("Não é permitido alocar custos em competência com fechamento DEFINITIVO sem reabertura prévia.")
+        }
+
+        // 2. Validar limite em relação à despesa original
+        val expense = dao.getExpenseById(allocation.expenseId)
+            ?: throw IllegalArgumentException("Despesa original não encontrada.")
+
+        val existing = dao.getCostAllocationsByExpense(allocation.expenseId)
+        val valid = ProfitabilityEngine.validateAllocationLimit(
+            expense = expense,
+            existingAllocations = existing,
+            newAllocationCents = allocation.allocatedAmountCents,
+            excludeAllocationId = allocation.id
+        )
+        if (!valid) {
+            val available = ProfitabilityEngine.getAvailableAmountForAllocation(expense, existing)
+            val availableFormatted = CurrencyUtils.formatCents(available)
+            throw IllegalArgumentException("O valor alocado excede o saldo disponível da despesa (Disponível: $availableFormatted).")
+        }
+
+        dao.insertCostAllocation(allocation)
+    }
+
+    suspend fun deleteCostAllocation(id: String) {
+        val allocation = dao.getCostAllocationById(id) ?: return
+        val closure = dao.getClosureByCompetence(allocation.competence)
+        if (closure != null && closure.status == "DEFINITIVO") {
+            throw IllegalStateException("Não é permitido excluir alocação de custos em competência encerrada definitivamente.")
+        }
+        dao.deleteCostAllocationById(id)
+    }
+
+    // --- POLÍTICAS DE RATEIO ---
+    fun observeApportionmentPolicies(): Flow<List<ApportionmentPolicyEntity>> =
+        dao.observeAllApportionmentPolicies()
+
+    suspend fun saveApportionmentPolicy(policy: ApportionmentPolicyEntity) {
+        dao.insertApportionmentPolicy(policy)
+    }
+
+    suspend fun deleteApportionmentPolicy(id: String) {
+        dao.deleteApportionmentPolicyById(id)
+    }
+
+    suspend fun applyApportionment(
+        policy: ApportionmentPolicyEntity,
+        expenseId: String,
+        competence: String,
+        previewItems: List<ApportionmentPreviewItem>,
+        notes: String = ""
+    ) {
+        val closure = dao.getClosureByCompetence(competence)
+        if (closure != null && closure.status == "DEFINITIVO") {
+            throw IllegalStateException("Não é permitido executar rateio sobre período com fechamento DEFINITIVO.")
+        }
+
+        val expense = dao.getExpenseById(expenseId)
+            ?: throw IllegalArgumentException("Despesa não encontrada.")
+
+        val existing = dao.getCostAllocationsByExpense(expenseId)
+        val totalToAllocate = previewItems.sumOf { it.allocatedCents }
+        val available = ProfitabilityEngine.getAvailableAmountForAllocation(expense, existing)
+
+        if (totalToAllocate > available) {
+            throw IllegalArgumentException("O valor total do rateio (${CurrencyUtils.formatCents(totalToAllocate)}) excede o disponível na despesa (${CurrencyUtils.formatCents(available)}).")
+        }
+
+        previewItems.forEach { item ->
+            if (item.allocatedCents > 0) {
+                dao.insertCostAllocation(
+                    CostAllocationEntity(
+                        id = UUID.randomUUID().toString(),
+                        expenseId = expenseId,
+                        allocationType = CostAllocationType.INDIRETO_RATEADO,
+                        contractId = item.contractId,
+                        clientId = item.clientId,
+                        serviceId = item.serviceId,
+                        competence = competence,
+                        allocatedAmountCents = item.allocatedCents,
+                        allocationPercentage = item.percentage,
+                        notes = "Rateio (${policy.name}): ${notes.ifBlank { "Rateio automático" }}",
+                        createdAt = System.currentTimeMillis()
+                    )
+                )
+            }
+        }
+    }
+
+    // --- CONTROLE DE TEMPO ---
+    fun observeTimeTrackingsByCompetence(competence: String): Flow<List<TimeTrackingEntity>> =
+        dao.observeTimeTrackingsByCompetence(competence)
+
+    fun observeTimeTrackingsByClient(clientId: String): Flow<List<TimeTrackingEntity>> =
+        dao.observeTimeTrackingsByClient(clientId)
+
+    fun observeAllTimeTrackings(): Flow<List<TimeTrackingEntity>> =
+        dao.observeAllTimeTrackings()
+
+    suspend fun saveTimeTracking(entry: TimeTrackingEntity) {
+        dao.insertTimeTracking(entry)
+    }
+
+    suspend fun deleteTimeTracking(id: String) {
+        dao.deleteTimeTrackingById(id)
+    }
+
+    // --- SIMULADOR DE PRECIFICAÇÃO ---
+    fun observePricingSimulationsByService(serviceId: String): Flow<List<PricingSimulationScenarioEntity>> =
+        dao.observePricingSimulationsByService(serviceId)
+
+    fun observeAllPricingSimulations(): Flow<List<PricingSimulationScenarioEntity>> =
+        dao.observeAllPricingSimulations()
+
+    suspend fun savePricingSimulation(simulation: PricingSimulationScenarioEntity) {
+        dao.insertPricingSimulation(simulation)
+    }
+
+    suspend fun deletePricingSimulation(id: String) {
+        dao.deletePricingSimulationById(id)
+    }
 }
+

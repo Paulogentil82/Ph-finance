@@ -11,6 +11,10 @@ import com.example.phfinance.data.local.ReceivableEntity
 import com.example.phfinance.data.local.ReconciliationEntity
 import com.example.phfinance.data.model.CurrencyUtils
 import com.example.phfinance.data.model.DateUtils
+import com.example.phfinance.data.model.ProfitabilityMetricResult
+import com.example.phfinance.data.model.ServiceProfitabilitySummary
+import com.example.phfinance.data.model.StudentProfitabilitySummary
+import com.example.phfinance.data.model.PricingScenarioResult
 import java.io.File
 import java.io.FileOutputStream
 
@@ -347,6 +351,173 @@ object ReportExporter {
             }
 
             val chooser = Intent.createChooser(intent, "Compartilhar Relatório de Conciliação (PDF)")
+            chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(chooser)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    fun exportServiceProfitabilityCsv(
+        context: Context,
+        services: List<ServiceProfitabilitySummary>,
+        competence: String
+    ) {
+        val header = "Serviço,Categoria,Contratos Ativos,Receita Líquida,Custos Diretos,Margem Contribuição,Margem %,Custos Indiretos,Resultado Gerencial,Horas Dedicadas,Receita/Hora,Custo Econômico Tempo,Resultado Econômico\n"
+        val body = services.joinToString("\n") { s ->
+            val rec = CurrencyUtils.formatCents(s.netRevenueCents)
+            val dir = CurrencyUtils.formatCents(s.directCostsCents)
+            val mc = CurrencyUtils.formatCents(s.contributionMarginCents)
+            val mcPct = String.format("%.1f%%", s.contributionMarginPercent)
+            val ind = CurrencyUtils.formatCents(s.allocatedIndirectCostsCents)
+            val res = CurrencyUtils.formatCents(s.managerialOperatingResultCents)
+            val hours = String.format("%.1fh", s.dedicatedHours)
+            val rpHour = CurrencyUtils.formatCents(s.revenuePerHourCents)
+            val econCost = CurrencyUtils.formatCents(s.economicCostOfTimeCents)
+            val econRes = CurrencyUtils.formatCents(s.economicResultCents)
+            "\"${s.serviceName}\",\"${s.category}\",${s.activeContractsCount},\"$rec\",\"$dir\",\"$mc\",\"$mcPct\",\"$ind\",\"$res\",\"$hours\",\"$rpHour\",\"$econCost\",\"$econRes\""
+        }
+        val fileContent = header + body
+        shareTextFile(context, fileContent, "rentabilidade_servicos_${competence.replace("/", "_")}.csv", "text/csv")
+    }
+
+    fun exportStudentProfitabilityCsv(
+        context: Context,
+        students: List<StudentProfitabilitySummary>,
+        competence: String
+    ) {
+        val header = "Aluno,Contratos Ativos,Receita Contratada,Receita Recebida,Receita Pendente,Descontos,Taxas,Custos Diretos,Custos Indiretos,Margem Contribuição,Margem %,Resultado Gerencial,Horas,Receita/Hora,Custo Econômico Tempo,Resultado Econômico\n"
+        val body = students.joinToString("\n") { s ->
+            val cont = CurrencyUtils.formatCents(s.contractedRevenueCents)
+            val rec = CurrencyUtils.formatCents(s.receivedRevenueCents)
+            val pend = CurrencyUtils.formatCents(s.pendingRevenueCents)
+            val desc = CurrencyUtils.formatCents(s.discountsCents)
+            val fee = CurrencyUtils.formatCents(s.financialFeesCents)
+            val dir = CurrencyUtils.formatCents(s.directCostsCents)
+            val ind = CurrencyUtils.formatCents(s.allocatedIndirectCostsCents)
+            val mc = CurrencyUtils.formatCents(s.contributionMarginCents)
+            val mcPct = String.format("%.1f%%", s.contributionMarginPercent)
+            val res = CurrencyUtils.formatCents(s.managerialOperatingResultCents)
+            val hours = String.format("%.1fh", s.dedicatedHours)
+            val rpHour = CurrencyUtils.formatCents(s.revenuePerHourCents)
+            val econCost = CurrencyUtils.formatCents(s.economicCostOfTimeCents)
+            val econRes = CurrencyUtils.formatCents(s.economicResultCents)
+            "\"${s.clientName}\",${s.activeContractsCount},\"$cont\",\"$rec\",\"$pend\",\"$desc\",\"$fee\",\"$dir\",\"$ind\",\"$mc\",\"$mcPct\",\"$res\",\"$hours\",\"$rpHour\",\"$econCost\",\"$econRes\""
+        }
+        val fileContent = header + body
+        shareTextFile(context, fileContent, "rentabilidade_alunos_${competence.replace("/", "_")}.csv", "text/csv")
+    }
+
+    fun exportPricingSimulationCsv(
+        context: Context,
+        serviceName: String,
+        scenarios: List<PricingScenarioResult>
+    ) {
+        val header = "Cenário,Tipo,Alunos Projetados,Receita Projetada,Margem Contribuição,Margem %,Resultado Operacional,Ponto de Equilíbrio (Break-Even),Receita/Hora Projetada\n"
+        val body = scenarios.joinToString("\n") { s ->
+            val rec = CurrencyUtils.formatCents(s.projectedRevenueCents)
+            val mc = CurrencyUtils.formatCents(s.projectedContributionMarginCents)
+            val mcPct = String.format("%.1f%%", s.projectedMarginPercent)
+            val res = CurrencyUtils.formatCents(s.projectedOperatingResultCents)
+            val rpHour = CurrencyUtils.formatCents(s.projectedRevenuePerHourCents)
+            "\"${s.scenarioName}\",\"${s.scenarioType}\",${s.projectedClients},\"$rec\",\"$mc\",\"$mcPct\",\"$res\",${s.breakEvenClients},\"$rpHour\""
+        }
+        val fileContent = header + body
+        shareTextFile(context, fileContent, "simulacao_precos_${serviceName.replace(" ", "_")}.csv", "text/csv")
+    }
+
+    fun exportProfitabilityPdf(
+        context: Context,
+        overview: ProfitabilityMetricResult,
+        services: List<ServiceProfitabilitySummary>,
+        competence: String,
+        businessName: String
+    ) {
+        val pdfDocument = android.graphics.pdf.PdfDocument()
+        val pageInfo = android.graphics.pdf.PdfDocument.PageInfo.Builder(595, 842, 1).create()
+        val page = pdfDocument.startPage(pageInfo)
+        val canvas = page.canvas
+
+        val titlePaint = android.graphics.Paint().apply {
+            color = android.graphics.Color.BLACK
+            textSize = 16f
+            isFakeBoldText = true
+        }
+        val subtitlePaint = android.graphics.Paint().apply {
+            color = android.graphics.Color.DKGRAY
+            textSize = 11f
+        }
+        val textPaint = android.graphics.Paint().apply {
+            color = android.graphics.Color.BLACK
+            textSize = 10f
+        }
+        val boldPaint = android.graphics.Paint().apply {
+            color = android.graphics.Color.BLACK
+            textSize = 10f
+            isFakeBoldText = true
+        }
+
+        var y = 45f
+        canvas.drawText("PH FINANCE — CENTRAL DE RENTABILIDADE & ANÁLISE GERENCIAL", 36f, y, titlePaint)
+        y += 18f
+        canvas.drawText("Empresa: $businessName | Competência: $competence | Gerado em: ${DateUtils.formatDateTime(System.currentTimeMillis())}", 36f, y, subtitlePaint)
+        y += 24f
+
+        canvas.drawText("1. INDICADORES GERAIS DA OPERAÇÃO", 36f, y, boldPaint)
+        y += 16f
+        canvas.drawText("Receita Líquida Recebida: ${CurrencyUtils.formatCents(overview.netRevenueCents)}", 48f, y, textPaint)
+        y += 14f
+        canvas.drawText("(-) Custos Diretos Atribuídos: ${CurrencyUtils.formatCents(overview.directCostsCents)}", 48f, y, textPaint)
+        y += 14f
+        canvas.drawText("(=) Margem de Contribuição (MC): ${CurrencyUtils.formatCents(overview.contributionMarginCents)} (${String.format("%.1f%%", overview.contributionMarginPercent)})", 48f, y, boldPaint)
+        y += 14f
+        canvas.drawText("(-) Custos Indiretos Alocados: ${CurrencyUtils.formatCents(overview.allocatedIndirectCostsCents)}", 48f, y, textPaint)
+        y += 14f
+        canvas.drawText("(=) Resultado Gerencial Operacional: ${CurrencyUtils.formatCents(overview.managerialOperatingResultCents)}", 48f, y, boldPaint)
+        y += 14f
+        canvas.drawText("Horas Dedicadas: ${String.format("%.1f", overview.dedicatedHours)}h | Receita Média/Hora: ${CurrencyUtils.formatCents(overview.revenuePerHourCents)}", 48f, y, textPaint)
+        y += 14f
+        canvas.drawText("Custo Econômico do Tempo (Custo Oportunidade): ${CurrencyUtils.formatCents(overview.economicCostOfTimeCents)}", 48f, y, subtitlePaint)
+        y += 14f
+        canvas.drawText("(=) Resultado Econômico do Negócio: ${CurrencyUtils.formatCents(overview.economicResultCents)}", 48f, y, boldPaint)
+        y += 24f
+
+        canvas.drawText("2. RENTABILIDADE POR SERVIÇO", 36f, y, boldPaint)
+        y += 16f
+
+        services.take(8).forEach { s ->
+            canvas.drawText("• ${s.serviceName} (${s.category}) - ${s.activeContractsCount} contratos", 48f, y, boldPaint)
+            y += 12f
+            canvas.drawText("  Receita: ${CurrencyUtils.formatCents(s.netRevenueCents)} | MC: ${CurrencyUtils.formatCents(s.contributionMarginCents)} (${String.format("%.1f%%", s.contributionMarginPercent)}) | Resultado: ${CurrencyUtils.formatCents(s.managerialOperatingResultCents)} | ${String.format("%.1f", s.dedicatedHours)}h (${CurrencyUtils.formatCents(s.revenuePerHourCents)}/h)", 48f, y, textPaint)
+            y += 16f
+        }
+
+        y += 10f
+        canvas.drawText("* Nota: A Margem de Contribuição não representa lucro líquido e não substitui o demonstrativo de fluxo de caixa.", 36f, y, subtitlePaint)
+
+        pdfDocument.finishPage(page)
+
+        try {
+            val cacheDir = File(context.cacheDir, "reports")
+            if (!cacheDir.exists()) cacheDir.mkdirs()
+
+            val fileName = "relatorio_rentabilidade_${competence.replace("/", "_")}.pdf"
+            val file = File(cacheDir, fileName)
+            FileOutputStream(file).use { out ->
+                pdfDocument.writeTo(out)
+            }
+            pdfDocument.close()
+
+            val authority = "${context.packageName}.fileprovider"
+            val uri = FileProvider.getUriForFile(context, authority, file)
+
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "application/pdf"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+
+            val chooser = Intent.createChooser(intent, "Compartilhar Relatório de Rentabilidade (PDF)")
             chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             context.startActivity(chooser)
         } catch (e: Exception) {

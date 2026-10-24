@@ -193,6 +193,12 @@ object DateUtils {
         return dateFormat.format(Date(timestamp))
     }
 
+    fun formatDateTime(timestamp: Long): String {
+        if (timestamp <= 0) return "-"
+        val dateTimeFormat = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale("pt", "BR"))
+        return dateTimeFormat.format(Date(timestamp))
+    }
+
     fun parseDate(dateStr: String): Long {
         return try {
             dateFormat.parse(dateStr)?.time ?: System.currentTimeMillis()

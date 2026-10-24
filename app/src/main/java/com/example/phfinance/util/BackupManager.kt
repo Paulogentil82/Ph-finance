@@ -25,6 +25,10 @@ import com.example.phfinance.data.local.ReceivableEntity
 import com.example.phfinance.data.local.ReconciliationAuditEntity
 import com.example.phfinance.data.local.ReconciliationEntity
 import com.example.phfinance.data.local.ServiceEntity
+import com.example.phfinance.data.local.CostAllocationEntity
+import com.example.phfinance.data.local.ApportionmentPolicyEntity
+import com.example.phfinance.data.local.TimeTrackingEntity
+import com.example.phfinance.data.local.PricingSimulationScenarioEntity
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import kotlinx.coroutines.Dispatchers
@@ -42,7 +46,7 @@ import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 
 data class BackupPayload(
-    val version: Int = 4,
+    val version: Int = 5,
     val timestamp: Long = System.currentTimeMillis(),
     val clients: List<ClientEntity> = emptyList(),
     val services: List<ServiceEntity> = emptyList(),
@@ -64,11 +68,15 @@ data class BackupPayload(
     val bankImports: List<BankImportEntity> = emptyList(),
     val bankTransactions: List<BankTransactionEntity> = emptyList(),
     val reconciliations: List<ReconciliationEntity> = emptyList(),
-    val reconciliationAudits: List<ReconciliationAuditEntity> = emptyList()
+    val reconciliationAudits: List<ReconciliationAuditEntity> = emptyList(),
+    val costAllocations: List<CostAllocationEntity> = emptyList(),
+    val apportionmentPolicies: List<ApportionmentPolicyEntity> = emptyList(),
+    val timeTrackings: List<TimeTrackingEntity> = emptyList(),
+    val pricingSimulations: List<PricingSimulationScenarioEntity> = emptyList()
 )
 
 data class EncryptedBackupWrapper(
-    val version: Int = 4,
+    val version: Int = 5,
     val timestamp: Long = System.currentTimeMillis(),
     val saltBase64: String,
     val ivBase64: String,
@@ -151,6 +159,7 @@ object BackupManager {
             ?: throw IllegalArgumentException("Arquivo de backup corrompido ou formato inválido.")
 
         val iterations = when (wrapper.version) {
+            5 -> PBKDF2_ITERATIONS_V3
             4 -> PBKDF2_ITERATIONS_V3
             3 -> PBKDF2_ITERATIONS_V3
             2 -> PBKDF2_ITERATIONS_V2
@@ -205,9 +214,13 @@ object BackupManager {
         val bankTransactions = dao.observeAllBankTransactions().first()
         val reconciliations = dao.observeAllReconciliations().first()
         val reconciliationAudits = dao.observeAllReconciliationAudits().first()
+        val costAllocations = dao.observeAllCostAllocations().first()
+        val apportionmentPolicies = dao.observeAllApportionmentPolicies().first()
+        val timeTrackings = dao.observeAllTimeTrackings().first()
+        val pricingSimulations = dao.observeAllPricingSimulations().first()
 
         val rawPayload = BackupPayload(
-            version = 4,
+            version = 5,
             timestamp = System.currentTimeMillis(),
             clients = clients,
             services = services,
@@ -229,10 +242,14 @@ object BackupManager {
             bankImports = bankImports,
             bankTransactions = bankTransactions,
             reconciliations = reconciliations,
-            reconciliationAudits = reconciliationAudits
+            reconciliationAudits = reconciliationAudits,
+            costAllocations = costAllocations,
+            apportionmentPolicies = apportionmentPolicies,
+            timeTrackings = timeTrackings,
+            pricingSimulations = pricingSimulations
         )
 
-        val wrapper = encryptPayloadToWrapper(rawPayload, password, version = 4)
+        val wrapper = encryptPayloadToWrapper(rawPayload, password, version = 5)
         val finalEncryptedJson = wrapperAdapter.toJson(wrapper)
 
         // Share via FileProvider
@@ -307,6 +324,10 @@ object BackupManager {
         payload.bankTransactions.forEach { dao.insertBankTransaction(it) }
         payload.reconciliations.forEach { dao.insertReconciliation(it) }
         payload.reconciliationAudits.forEach { dao.insertReconciliationAudit(it) }
+        payload.costAllocations.forEach { dao.insertCostAllocation(it) }
+        payload.apportionmentPolicies.forEach { dao.insertApportionmentPolicy(it) }
+        payload.timeTrackings.forEach { dao.insertTimeTracking(it) }
+        payload.pricingSimulations.forEach { dao.insertPricingSimulation(it) }
 
         BackupImportResult(
             success = true,

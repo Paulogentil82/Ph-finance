@@ -109,6 +109,11 @@ fun FinancialScreen(viewModel: PhFinanceViewModel) {
                 onClick = { selectedTab = 4 },
                 text = { Text("Contas & Caixa") }
             )
+            Tab(
+                selected = selectedTab == 5,
+                onClick = { selectedTab = 5 },
+                text = { Text("Rentabilidade") }
+            )
         }
 
         when (selectedTab) {
@@ -117,6 +122,7 @@ fun FinancialScreen(viewModel: PhFinanceViewModel) {
             2 -> ReconciliationScreen(viewModel)
             3 -> com.example.phfinance.ui.components.MonthlyClosureComponent(viewModel)
             4 -> AccountsTab(viewModel)
+            5 -> ProfitabilityScreen(viewModel)
         }
     }
 }

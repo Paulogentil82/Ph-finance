@@ -351,5 +351,108 @@ interface PhFinanceDao {
 
     @Query("DELETE FROM reconciliations")
     suspend fun clearAllReconciliations()
+
+    // --- COST ALLOCATIONS ---
+    @Query("SELECT * FROM cost_allocations ORDER BY createdAt DESC")
+    fun observeAllCostAllocations(): Flow<List<CostAllocationEntity>>
+
+    @Query("SELECT * FROM cost_allocations WHERE competence = :competence ORDER BY createdAt DESC")
+    fun observeCostAllocationsByCompetence(competence: String): Flow<List<CostAllocationEntity>>
+
+    @Query("SELECT * FROM cost_allocations WHERE expenseId = :expenseId")
+    suspend fun getCostAllocationsByExpense(expenseId: String): List<CostAllocationEntity>
+
+    @Query("SELECT * FROM cost_allocations WHERE expenseId = :expenseId ORDER BY createdAt DESC")
+    fun observeCostAllocationsByExpense(expenseId: String): Flow<List<CostAllocationEntity>>
+
+    @Query("SELECT * FROM cost_allocations WHERE id = :id")
+    suspend fun getCostAllocationById(id: String): CostAllocationEntity?
+
+    @Query("SELECT * FROM cost_allocations WHERE contractId = :contractId ORDER BY createdAt DESC")
+    fun observeCostAllocationsByContract(contractId: String): Flow<List<CostAllocationEntity>>
+
+    @Query("SELECT * FROM cost_allocations WHERE clientId = :clientId ORDER BY createdAt DESC")
+    fun observeCostAllocationsByClient(clientId: String): Flow<List<CostAllocationEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertCostAllocation(allocation: CostAllocationEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertCostAllocations(allocations: List<CostAllocationEntity>)
+
+    @Query("DELETE FROM cost_allocations WHERE id = :id")
+    suspend fun deleteCostAllocation(id: String)
+
+    @Query("DELETE FROM cost_allocations WHERE id = :id")
+    suspend fun deleteCostAllocationById(id: String)
+
+    @Query("DELETE FROM cost_allocations WHERE expenseId = :expenseId")
+    suspend fun deleteCostAllocationsByExpense(expenseId: String)
+
+    // --- APPORTIONMENT POLICIES ---
+    @Query("SELECT * FROM apportionment_policies ORDER BY createdAt DESC")
+    fun observeAllApportionmentPolicies(): Flow<List<ApportionmentPolicyEntity>>
+
+    @Query("SELECT * FROM apportionment_policies WHERE isActive = 1 ORDER BY createdAt DESC")
+    suspend fun getActiveApportionmentPolicies(): List<ApportionmentPolicyEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertApportionmentPolicy(policy: ApportionmentPolicyEntity)
+
+    @Query("DELETE FROM apportionment_policies WHERE id = :id")
+    suspend fun deleteApportionmentPolicy(id: String)
+
+    @Query("DELETE FROM apportionment_policies WHERE id = :id")
+    suspend fun deleteApportionmentPolicyById(id: String)
+
+    // --- TIME TRACKINGS ---
+    @Query("SELECT * FROM time_trackings ORDER BY date DESC, createdAt DESC")
+    fun observeAllTimeTrackings(): Flow<List<TimeTrackingEntity>>
+
+    @Query("SELECT * FROM time_trackings WHERE competence = :competence ORDER BY date DESC")
+    fun observeTimeTrackingsByCompetence(competence: String): Flow<List<TimeTrackingEntity>>
+
+    @Query("SELECT * FROM time_trackings WHERE clientId = :clientId ORDER BY date DESC")
+    fun observeTimeTrackingsByClient(clientId: String): Flow<List<TimeTrackingEntity>>
+
+    @Query("SELECT * FROM time_trackings WHERE serviceId = :serviceId ORDER BY date DESC")
+    fun observeTimeTrackingsByService(serviceId: String): Flow<List<TimeTrackingEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertTimeTracking(timeTracking: TimeTrackingEntity)
+
+    @Query("DELETE FROM time_trackings WHERE id = :id")
+    suspend fun deleteTimeTracking(id: String)
+
+    @Query("DELETE FROM time_trackings WHERE id = :id")
+    suspend fun deleteTimeTrackingById(id: String)
+
+    // --- PRICING SIMULATIONS ---
+    @Query("SELECT * FROM pricing_simulations ORDER BY createdAt DESC")
+    fun observeAllPricingSimulations(): Flow<List<PricingSimulationScenarioEntity>>
+
+    @Query("SELECT * FROM pricing_simulations WHERE serviceId = :serviceId ORDER BY createdAt DESC")
+    fun observePricingSimulationsByService(serviceId: String): Flow<List<PricingSimulationScenarioEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertPricingSimulation(scenario: PricingSimulationScenarioEntity)
+
+    @Query("DELETE FROM pricing_simulations WHERE id = :id")
+    suspend fun deletePricingSimulation(id: String)
+
+    @Query("DELETE FROM pricing_simulations WHERE id = :id")
+    suspend fun deletePricingSimulationById(id: String)
+
+    @Query("DELETE FROM cost_allocations")
+    suspend fun clearAllCostAllocations()
+
+    @Query("DELETE FROM apportionment_policies")
+    suspend fun clearAllApportionmentPolicies()
+
+    @Query("DELETE FROM time_trackings")
+    suspend fun clearAllTimeTrackings()
+
+    @Query("DELETE FROM pricing_simulations")
+    suspend fun clearAllPricingSimulations()
 }
 

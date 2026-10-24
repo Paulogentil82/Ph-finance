@@ -20,6 +20,7 @@ object ProfitabilityEngine {
 
     /**
      * Valida se a soma das alocações existentes mais a nova não ultrapassa o valor total da despesa.
+     * Rejeita valores negativos estritamente.
      */
     fun validateAllocationLimit(
         expense: ExpenseEntity,
@@ -27,6 +28,9 @@ object ProfitabilityEngine {
         newAllocationCents: Long,
         excludeAllocationId: String? = null
     ): Boolean {
+        require(newAllocationCents >= 0L) { "O valor da alocação não pode ser negativo." }
+        require(expense.valueCents >= 0L) { "O valor da despesa original não pode ser negativo." }
+
         val totalAllocated = existingAllocations
             .filter { it.expenseId == expense.id && it.id != excludeAllocationId }
             .sumOf { it.allocatedAmountCents }
@@ -48,6 +52,7 @@ object ProfitabilityEngine {
 
     /**
      * Calcula o preview de rateio para uma política e despesas indiretas selecionadas.
+     * Trata QUANTIDADE_SESSOES utilizando a quantidade real de sessões por contrato.
      */
     fun calculateApportionmentPreview(
         method: ApportionmentMethod,
@@ -56,11 +61,14 @@ object ProfitabilityEngine {
         clients: List<ClientEntity>,
         timeTrackings: List<TimeTrackingEntity>,
         receivablesInPeriod: List<ReceivableEntity>,
-        fixedAmountPerContractCents: Long = 0L
+        fixedAmountPerContractCents: Long = 0L,
+        contractSessionCounts: Map<String, Int> = emptyMap(),
+        services: List<ServiceEntity> = emptyList()
     ): List<ApportionmentPreviewItem> {
         if (activeContracts.isEmpty() || totalIndirectCents <= 0L) return emptyList()
 
         val clientMap = clients.associateBy { it.id }
+        val serviceMap = services.associateBy { it.id }
 
         return when (method) {
             ApportionmentMethod.PROPORCIONAL_RECEITA -> {
@@ -135,7 +143,42 @@ object ProfitabilityEngine {
                 }
             }
 
-            ApportionmentMethod.QUANTIDADE_CLIENTES, ApportionmentMethod.QUANTIDADE_SESSOES -> {
+            ApportionmentMethod.QUANTIDADE_SESSOES -> {
+                val contractSessionsMap = activeContracts.associateWith { contract ->
+                    contractSessionCounts[contract.id] ?: serviceMap[contract.serviceId]?.sessionCount ?: 1
+                }
+                val totalSessions = contractSessionsMap.values.sum().toDouble()
+                if (totalSessions <= 0.0) {
+                    divideEqually(activeContracts, clientMap, totalIndirectCents)
+                } else {
+                    var accumulated = 0L
+                    activeContracts.mapIndexed { index, contract ->
+                        val sessions = contractSessionsMap[contract] ?: 1
+                        val ratio = sessions.toDouble() / totalSessions
+                        val allocated = if (index == activeContracts.lastIndex) {
+                            totalIndirectCents - accumulated
+                        } else {
+                            (totalIndirectCents * ratio).toLong()
+                        }
+                        accumulated += allocated
+                        ApportionmentPreviewItem(
+                            targetId = contract.id,
+                            targetLabel = clientMap[contract.clientId]?.fullName ?: "Aluno",
+                            baseValue = sessions.toDouble(),
+                            basePercentage = ratio * 100.0,
+                            allocatedAmountCents = allocated,
+                            contractId = contract.id,
+                            clientId = contract.clientId,
+                            clientName = clientMap[contract.clientId]?.fullName ?: "Aluno",
+                            serviceId = contract.serviceId,
+                            percentage = ratio * 100.0,
+                            allocatedCents = allocated
+                        )
+                    }
+                }
+            }
+
+            ApportionmentMethod.QUANTIDADE_CLIENTES -> {
                 divideEqually(activeContracts, clientMap, totalIndirectCents)
             }
 
@@ -170,35 +213,31 @@ object ProfitabilityEngine {
         totalIndirectCents: Long
     ): List<ApportionmentPreviewItem> {
         val count = activeContracts.size
+        if (count == 0) return emptyList()
         val baseShare = totalIndirectCents / count
-        var accumulated = 0L
+        var remainder = totalIndirectCents % count
 
         return activeContracts.mapIndexed { index, contract ->
-            val allocated = if (index == count - 1) {
-                totalIndirectCents - accumulated
-            } else {
-                baseShare
-            }
-            accumulated += allocated
-            val pct = (allocated.toDouble() / totalIndirectCents.toDouble()) * 100.0
+            val share = baseShare + if (index < remainder) 1L else 0L
+            val pct = (share.toDouble() / totalIndirectCents.toDouble()) * 100.0
             ApportionmentPreviewItem(
                 targetId = contract.id,
                 targetLabel = clientMap[contract.clientId]?.fullName ?: "Aluno",
-                baseValue = 1.0,
+                baseValue = share.toDouble(),
                 basePercentage = pct,
-                allocatedAmountCents = allocated,
+                allocatedAmountCents = share,
                 contractId = contract.id,
                 clientId = contract.clientId,
                 clientName = clientMap[contract.clientId]?.fullName ?: "Aluno",
                 serviceId = contract.serviceId,
                 percentage = pct,
-                allocatedCents = allocated
+                allocatedCents = share
             )
         }
     }
 
     /**
-     * Calcula métricas agregadas da Central de Rentabilidade para a competência/período.
+     * Calcula os indicadores gerais (DRE Gerencial / Visão Geral) respeitando competência e múltiplos pagamentos.
      */
     fun calculateOverviewMetrics(
         receivables: List<ReceivableEntity>,
@@ -208,11 +247,38 @@ object ProfitabilityEngine {
         timeTrackings: List<TimeTrackingEntity>,
         clients: List<ClientEntity>,
         contracts: List<ContractEntity>,
-        hourlyEconomicRateCents: Long = 5000L
+        hourlyEconomicRateCents: Long = 5000L,
+        competenceFilter: String? = null
     ): ProfitabilityMetricResult {
-        val netRevenueCents = payments.sumOf { it.grossAmountCents - it.feeCents }
+        val filteredReceivables = if (competenceFilter != null) {
+            receivables.filter { it.competence == competenceFilter }
+        } else receivables
 
-        val directCostsCents = costAllocations
+        val paymentMap = payments.groupBy { it.receivableId }
+
+        var netRevenueCents = 0L
+        if (filteredReceivables.isNotEmpty()) {
+            filteredReceivables.forEach { rec ->
+                val pList = paymentMap[rec.id] ?: emptyList()
+                if (pList.isNotEmpty()) {
+                    val paidGross = pList.sumOf { it.grossAmountCents }
+                    val paidFee = pList.sumOf { it.feeCents }
+                    netRevenueCents += (paidGross - paidFee)
+                } else if (rec.status == ReceivableStatus.QUITADA || rec.status.name == "RECEBIDO") {
+                    netRevenueCents += rec.netValueCents
+                }
+            }
+        } else {
+            payments.forEach { p ->
+                netRevenueCents += (p.grossAmountCents - p.feeCents)
+            }
+        }
+
+        val filteredAllocations = if (competenceFilter != null) {
+            costAllocations.filter { it.competence == competenceFilter }
+        } else costAllocations
+
+        val directCostsCents = filteredAllocations
             .filter { it.allocationType != CostAllocationType.INDIRETO_RATEADO && it.allocationType != CostAllocationType.INDIRETO }
             .sumOf { it.allocatedAmountCents }
 
@@ -221,14 +287,18 @@ object ProfitabilityEngine {
             (contributionMarginCents.toDouble() / netRevenueCents.toDouble()) * 100.0
         } else 0.0
 
-        val allocatedIndirectCents = costAllocations
+        val indirectCostsCents = filteredAllocations
             .filter { it.allocationType == CostAllocationType.INDIRETO_RATEADO || it.allocationType == CostAllocationType.INDIRETO }
             .sumOf { it.allocatedAmountCents }
 
-        val managerialOperatingResultCents = contributionMarginCents - allocatedIndirectCents
+        val managerialOperatingResultCents = contributionMarginCents - indirectCostsCents
 
-        val totalDedicatedMinutes = timeTrackings.sumOf { it.durationMinutes }
-        val dedicatedHours = totalDedicatedMinutes / 60.0
+        val filteredTime = if (competenceFilter != null) {
+            timeTrackings.filter { it.competence == competenceFilter }
+        } else timeTrackings
+
+        val dedicatedMinutes = filteredTime.sumOf { it.durationMinutes }
+        val dedicatedHours = dedicatedMinutes / 60.0
 
         val revenuePerHourCents = if (dedicatedHours > 0.0) {
             (netRevenueCents / dedicatedHours).toLong()
@@ -238,29 +308,22 @@ object ProfitabilityEngine {
         val economicResultCents = managerialOperatingResultCents - economicCostOfTimeCents
 
         return ProfitabilityMetricResult(
-            revenueReceivedCents = payments.sumOf { it.grossAmountCents },
-            financialFeesCents = payments.sumOf { it.feeCents },
             netRevenueCents = netRevenueCents,
             directCostsCents = directCostsCents,
             contributionMarginCents = contributionMarginCents,
             contributionMarginPercent = contributionMarginPercent,
-            allocatedIndirectCostsCents = allocatedIndirectCents,
+            allocatedIndirectCostsCents = indirectCostsCents,
             managerialOperatingResultCents = managerialOperatingResultCents,
-            dedicatedMinutes = totalDedicatedMinutes,
+            dedicatedMinutes = dedicatedMinutes,
             dedicatedHours = dedicatedHours,
             revenuePerHourCents = revenuePerHourCents,
-            economicHourlyRateCents = hourlyEconomicRateCents,
-            estimatedEconomicCostOfTimeCents = economicCostOfTimeCents,
-            estimatedEconomicResultCents = economicResultCents,
             economicCostOfTimeCents = economicCostOfTimeCents,
-            economicResultCents = economicResultCents,
-            activeClientsCount = clients.count { !it.isArchived },
-            activeContractsCount = contracts.count { it.status.name == "ATIVO" }
+            economicResultCents = economicResultCents
         )
     }
 
     /**
-     * Calcula o resumo de rentabilidade por serviço.
+     * Calcula a rentabilidade por serviço suportando múltiplos pagamentos.
      */
     fun calculateServiceSummaries(
         services: List<ServiceEntity>,
@@ -269,30 +332,55 @@ object ProfitabilityEngine {
         payments: List<PaymentEntity>,
         costAllocations: List<CostAllocationEntity>,
         timeTrackings: List<TimeTrackingEntity>,
-        hourlyEconomicRateCents: Long = 5000L
+        hourlyEconomicRateCents: Long = 5000L,
+        competenceFilter: String? = null
     ): List<ServiceProfitabilitySummary> {
-        val paymentMap = payments.associateBy { it.receivableId }
+        val filteredReceivables = if (competenceFilter != null) {
+            receivables.filter { it.competence == competenceFilter }
+        } else receivables
+
+        val paymentMap = payments.groupBy { it.receivableId }
 
         return services.map { service ->
             val serviceContracts = contracts.filter { it.serviceId == service.id }
             val contractIds = serviceContracts.map { it.id }.toSet()
 
-            val serviceReceivables = receivables.filter { it.contractId in contractIds }
-            val netRevenueCents = serviceReceivables.sumOf { rec ->
-                val p = paymentMap[rec.id]
-                if (p != null) p.grossAmountCents - p.feeCents else if (rec.status == ReceivableStatus.QUITADA || rec.status.name == "RECEBIDO") rec.netValueCents else 0L
+            val serviceReceivables = filteredReceivables.filter { it.contractId in contractIds || contractIds.isEmpty() }
+            var netRevenueCents = 0L
+            serviceReceivables.forEach { rec ->
+                val pList = paymentMap[rec.id] ?: emptyList()
+                if (pList.isNotEmpty()) {
+                    val paidGross = pList.sumOf { it.grossAmountCents }
+                    val paidFee = pList.sumOf { it.feeCents }
+                    netRevenueCents += (paidGross - paidFee)
+                } else if (rec.status == ReceivableStatus.QUITADA || rec.status.name == "RECEBIDO") {
+                    netRevenueCents += rec.netValueCents
+                }
             }
 
-            val directCostsCents = costAllocations
+            // Fallback to direct payments if serviceReceivables empty
+            if (serviceReceivables.isEmpty()) {
+                val servicePayments = payments.filter { p ->
+                    val rec = receivables.find { it.id == p.receivableId }
+                    rec?.contractId in contractIds
+                }
+                netRevenueCents += servicePayments.sumOf { it.grossAmountCents - it.feeCents }
+            }
+
+            val filteredAllocations = if (competenceFilter != null) {
+                costAllocations.filter { it.competence == competenceFilter }
+            } else costAllocations
+
+            val directCostsCents = filteredAllocations
                 .filter {
                     (it.serviceId == service.id || it.contractId in contractIds) &&
                             (it.allocationType != CostAllocationType.INDIRETO_RATEADO && it.allocationType != CostAllocationType.INDIRETO)
                 }
                 .sumOf { it.allocatedAmountCents }
 
-            val indirectCostsCents = costAllocations
+            val indirectCostsCents = filteredAllocations
                 .filter {
-                    it.contractId in contractIds &&
+                    (it.serviceId == service.id || it.contractId in contractIds) &&
                             (it.allocationType == CostAllocationType.INDIRETO_RATEADO || it.allocationType == CostAllocationType.INDIRETO)
                 }
                 .sumOf { it.allocatedAmountCents }
@@ -304,7 +392,11 @@ object ProfitabilityEngine {
 
             val operatingResultCents = contributionMarginCents - indirectCostsCents
 
-            val dedicatedMinutes = timeTrackings
+            val filteredTime = if (competenceFilter != null) {
+                timeTrackings.filter { it.competence == competenceFilter }
+            } else timeTrackings
+
+            val dedicatedMinutes = filteredTime
                 .filter { it.serviceId == service.id || it.contractId in contractIds }
                 .sumOf { it.durationMinutes }
             val dedicatedHours = dedicatedMinutes / 60.0
@@ -339,7 +431,7 @@ object ProfitabilityEngine {
     }
 
     /**
-     * Calcula a análise financeira individual de cada aluno.
+     * Calcula a análise financeira individual de cada aluno suportando múltiplos pagamentos.
      */
     fun calculateStudentSummaries(
         clients: List<ClientEntity>,
@@ -348,38 +440,60 @@ object ProfitabilityEngine {
         payments: List<PaymentEntity>,
         costAllocations: List<CostAllocationEntity>,
         timeTrackings: List<TimeTrackingEntity>,
-        hourlyEconomicRateCents: Long = 5000L
+        hourlyEconomicRateCents: Long = 5000L,
+        competenceFilter: String? = null
     ): List<StudentProfitabilitySummary> {
-        val paymentMap = payments.associateBy { it.receivableId }
+        val filteredReceivables = if (competenceFilter != null) {
+            receivables.filter { it.competence == competenceFilter }
+        } else receivables
+
+        val paymentMap = payments.groupBy { it.receivableId }
 
         return clients.map { client ->
             val clientContracts = contracts.filter { it.clientId == client.id }
             val contractIds = clientContracts.map { it.id }.toSet()
 
-            val clientReceivables = receivables.filter { it.clientId == client.id || it.contractId in contractIds }
+            val clientReceivables = filteredReceivables.filter { it.clientId == client.id || it.contractId in contractIds || contractIds.isEmpty() }
 
             val contractedRevenueCents = clientReceivables.sumOf { it.originalValueCents }
-            val receivedRevenueCents = clientReceivables.sumOf { rec ->
-                val p = paymentMap[rec.id]
-                if (p != null) p.grossAmountCents else if (rec.status == ReceivableStatus.QUITADA || rec.status.name == "RECEBIDO") rec.receivedValueCents.takeIf { it > 0 } ?: rec.originalValueCents else 0L
+            var receivedRevenueCents = 0L
+            var feesCents = 0L
+            clientReceivables.forEach { rec ->
+                val pList = paymentMap[rec.id] ?: emptyList()
+                if (pList.isNotEmpty()) {
+                    receivedRevenueCents += pList.sumOf { it.grossAmountCents }
+                    feesCents += pList.sumOf { it.feeCents }
+                } else if (rec.status == ReceivableStatus.QUITADA || rec.status.name == "RECEBIDO") {
+                    receivedRevenueCents += (rec.receivedValueCents.takeIf { it > 0 } ?: rec.originalValueCents)
+                }
             }
+
+            if (clientReceivables.isEmpty()) {
+                val clientPayments = payments.filter { p ->
+                    val rec = receivables.find { it.id == p.receivableId }
+                    rec?.clientId == client.id || rec?.contractId in contractIds
+                }
+                receivedRevenueCents += clientPayments.sumOf { it.grossAmountCents }
+                feesCents += clientPayments.sumOf { it.feeCents }
+            }
+
             val discountsCents = clientReceivables.sumOf { it.discountCents }
-            val feesCents = clientReceivables.sumOf { rec ->
-                val p = paymentMap[rec.id]
-                p?.feeCents ?: 0L
-            }
             val pendingRevenueCents = clientReceivables
                 .filter { it.status == ReceivableStatus.PENDENTE || it.status.name == "ATRASADO" }
                 .sumOf { it.netValueCents }
 
-            val directCostsCents = costAllocations
+            val filteredAllocations = if (competenceFilter != null) {
+                costAllocations.filter { it.competence == competenceFilter }
+            } else costAllocations
+
+            val directCostsCents = filteredAllocations
                 .filter {
                     (it.clientId == client.id || it.contractId in contractIds) &&
                             (it.allocationType != CostAllocationType.INDIRETO_RATEADO && it.allocationType != CostAllocationType.INDIRETO)
                 }
                 .sumOf { it.allocatedAmountCents }
 
-            val allocatedIndirectCostsCents = costAllocations
+            val allocatedIndirectCostsCents = filteredAllocations
                 .filter {
                     (it.clientId == client.id || it.contractId in contractIds) &&
                             (it.allocationType == CostAllocationType.INDIRETO_RATEADO || it.allocationType == CostAllocationType.INDIRETO)
@@ -394,7 +508,11 @@ object ProfitabilityEngine {
 
             val operatingResultCents = contributionMarginCents - allocatedIndirectCostsCents
 
-            val dedicatedMinutes = timeTrackings
+            val filteredTime = if (competenceFilter != null) {
+                timeTrackings.filter { it.competence == competenceFilter }
+            } else timeTrackings
+
+            val dedicatedMinutes = filteredTime
                 .filter { it.clientId == client.id || it.contractId in contractIds }
                 .sumOf { it.durationMinutes }
             val dedicatedHours = dedicatedMinutes / 60.0

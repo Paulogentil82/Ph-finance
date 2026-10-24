@@ -285,11 +285,31 @@ object BackupManager {
     suspend fun restoreEncryptedBackup(
         backupContent: String,
         password: String,
-        dao: PhFinanceDao
+        dao: PhFinanceDao,
+        database: androidx.room.RoomDatabase? = null
     ): BackupImportResult = withContext(Dispatchers.IO) {
         try {
             val payload = decryptWrapperToPayload(backupContent, password)
-            importPayload(payload, dao, "Backup criptografado AES-256-GCM restaurado com sucesso!")
+            require(payload.version in 1..5) { "Versão de backup inválida ou não suportada: ${payload.version}" }
+
+            if (database != null) {
+                database.runInTransaction {
+                    kotlinx.coroutines.runBlocking {
+                        importPayloadInternal(payload, dao)
+                    }
+                }
+            } else {
+                importPayloadInternal(payload, dao)
+            }
+
+            BackupImportResult(
+                success = true,
+                message = "Backup criptografado AES-256-GCM restaurado com sucesso!",
+                clientsCount = payload.clients.size,
+                receivablesCount = payload.receivables.size,
+                expensesCount = payload.expenses.size,
+                closuresCount = payload.monthlyClosures.size
+            )
         } catch (e: Exception) {
             BackupImportResult(
                 success = false,
@@ -301,8 +321,37 @@ object BackupManager {
     suspend fun importPayload(
         payload: BackupPayload,
         dao: PhFinanceDao,
-        successMsg: String
+        successMsg: String,
+        database: androidx.room.RoomDatabase? = null
     ): BackupImportResult = withContext(Dispatchers.IO) {
+        try {
+            require(payload.version in 1..5) { "Versão de backup inválida ou não suportada: ${payload.version}" }
+            if (database != null) {
+                database.runInTransaction {
+                    kotlinx.coroutines.runBlocking {
+                        importPayloadInternal(payload, dao)
+                    }
+                }
+            } else {
+                importPayloadInternal(payload, dao)
+            }
+            BackupImportResult(
+                success = true,
+                message = successMsg,
+                clientsCount = payload.clients.size,
+                receivablesCount = payload.receivables.size,
+                expensesCount = payload.expenses.size,
+                closuresCount = payload.monthlyClosures.size
+            )
+        } catch (e: Exception) {
+            BackupImportResult(
+                success = false,
+                message = "Erro ao importar payload: ${e.localizedMessage}"
+            )
+        }
+    }
+
+    private suspend fun importPayloadInternal(payload: BackupPayload, dao: PhFinanceDao) {
         payload.expenseCategories.forEach { dao.insertExpenseCategory(it) }
         payload.clients.forEach { dao.insertClient(it) }
         payload.services.forEach { dao.insertService(it) }
@@ -328,15 +377,6 @@ object BackupManager {
         payload.apportionmentPolicies.forEach { dao.insertApportionmentPolicy(it) }
         payload.timeTrackings.forEach { dao.insertTimeTracking(it) }
         payload.pricingSimulations.forEach { dao.insertPricingSimulation(it) }
-
-        BackupImportResult(
-            success = true,
-            message = successMsg,
-            clientsCount = payload.clients.size,
-            receivablesCount = payload.receivables.size,
-            expensesCount = payload.expenses.size,
-            closuresCount = payload.monthlyClosures.size
-        )
     }
 
     private fun deriveKey(password: String, salt: ByteArray, iterations: Int): SecretKeySpec {

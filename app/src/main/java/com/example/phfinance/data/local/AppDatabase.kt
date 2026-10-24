@@ -44,7 +44,7 @@ import java.util.UUID
         PricingSimulationScenarioEntity::class
     ],
     version = 5,
-    exportSchema = false
+    exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
 

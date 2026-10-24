@@ -679,4 +679,76 @@ class ProfitabilityEngineTest {
         assertEquals(1, decrypted.timeTrackings.size)
         assertEquals(5000L, decrypted.costAllocations[0].allocatedAmountCents)
     }
+
+    @Test
+    fun testRegression_multiplePaymentsPerReceivable() {
+        val receivable = ReceivableEntity(
+            id = "rec_multi",
+            clientId = "cli_1",
+            contractId = "con_1",
+            competence = testCompetence,
+            dueDate = 0L,
+            originalValueCents = 100000L,
+            netValueCents = 100000L,
+            status = ReceivableStatus.QUITADA
+        )
+        val payments = listOf(
+            PaymentEntity(id = "p1", receivableId = "rec_multi", clientId = "cli_1", grossAmountCents = 40000L, feeCents = 1000L, netAmountCents = 39000L, destinationAccountId = "acc_1"),
+            PaymentEntity(id = "p2", receivableId = "rec_multi", clientId = "cli_1", grossAmountCents = 60000L, feeCents = 2000L, netAmountCents = 58000L, destinationAccountId = "acc_1")
+        )
+
+        val metrics = ProfitabilityEngine.calculateOverviewMetrics(
+            receivables = listOf(receivable),
+            payments = payments,
+            expenses = emptyList(),
+            costAllocations = emptyList(),
+            timeTrackings = emptyList(),
+            clients = emptyList(),
+            contracts = emptyList(),
+            competenceFilter = testCompetence
+        )
+
+        assertEquals(97000L, metrics.netRevenueCents)
+    }
+
+    @Test
+    fun testRegression_sessionApportionmentPrecision() {
+        val clients = listOf(createDummyClient("c1", "A"), createDummyClient("c2", "B"), createDummyClient("c3", "C"))
+        val contracts = listOf(
+            createDummyContract("con_1", "c1", "s1"),
+            createDummyContract("con_2", "c2", "s1"),
+            createDummyContract("con_3", "c3", "s1")
+        )
+        val sessionCounts = mapOf("con_1" to 3, "con_2" to 3, "con_3" to 4)
+        val totalIndirectCents = 1000L
+
+        val preview = ProfitabilityEngine.calculateApportionmentPreview(
+            method = ApportionmentMethod.QUANTIDADE_SESSOES,
+            totalIndirectCents = totalIndirectCents,
+            activeContracts = contracts,
+            clients = clients,
+            timeTrackings = emptyList(),
+            receivablesInPeriod = emptyList(),
+            contractSessionCounts = sessionCounts
+        )
+
+        assertEquals(3, preview.size)
+        assertEquals(300L, preview.first { it.contractId == "con_1" }.allocatedCents)
+        assertEquals(300L, preview.first { it.contractId == "con_2" }.allocatedCents)
+        assertEquals(400L, preview.first { it.contractId == "con_3" }.allocatedCents)
+        assertEquals(totalIndirectCents, preview.sumOf { it.allocatedCents })
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun testRegression_negativeAllocationValidation() {
+        val expense = ExpenseEntity(
+            id = "exp_neg",
+            description = "Teste",
+            category = "Op",
+            valueCents = 10000L,
+            competence = testCompetence,
+            dueDate = 0L
+        )
+        ProfitabilityEngine.validateAllocationLimit(expense, emptyList(), -500L)
+    }
 }

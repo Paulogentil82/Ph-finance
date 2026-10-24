@@ -52,6 +52,7 @@ import com.google.firebase.auth.GoogleAuthProvider
 import com.google.firebase.auth.auth
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 
 @Composable
 fun AuthScreen(
@@ -160,6 +161,7 @@ fun AuthScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(50.dp),
+                        enabled = !isLoading,
                         shape = RoundedCornerShape(12.dp)
                     ) {
                         Text("Acessar como Proprietário (Dev Mode)", fontWeight = FontWeight.SemiBold)
@@ -190,9 +192,14 @@ fun onGoogleSignInClicked(
 ) {
     val clientId = try {
         val resId = context.resources.getIdentifier("default_web_client_id", "string", context.packageName)
-        if (resId != 0) context.getString(resId) else "10839281928-mockclientid.apps.googleusercontent.com"
+        if (resId != 0) context.getString(resId) else ""
     } catch (e: Exception) {
-        "10839281928-mockclientid.apps.googleusercontent.com"
+        ""
+    }
+
+    if (clientId.isBlank() || clientId.contains("mockclientid", ignoreCase = true)) {
+        onAuthError("Web Client ID do Google OAuth não configurado no aplicativo. Configure o Web Client ID no google-services.json para habilitar o Google Sign-In.")
+        return
     }
 
     val signInOption = GetSignInWithGoogleOption.Builder(serverClientId = clientId).build()
@@ -200,22 +207,43 @@ fun onGoogleSignInClicked(
 
     scope.launch {
         try {
-            val result = credentialManager.getCredential(context as Activity, request)
+            val activity = context as? Activity
+            if (activity == null) {
+                onAuthError("Contexto de Activity inválido para login.")
+                return@launch
+            }
+
+            val result = credentialManager.getCredential(activity, request)
             val credential = result.credential
+
             if (credential is CustomCredential && credential.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
                 val googleIdToken = GoogleIdTokenCredential.createFrom(credential.data).idToken
                 val authCredential = GoogleAuthProvider.getCredential(googleIdToken, null)
-                Firebase.auth.signInWithCredential(authCredential)
-                onAuthSuccess()
+
+                val authResult = Firebase.auth.signInWithCredential(authCredential).await()
+                val user = authResult.user ?: Firebase.auth.currentUser
+
+                if (user != null) {
+                    onAuthSuccess()
+                } else {
+                    onAuthError("Falha na autenticação Firebase: usuário retornado é nulo.")
+                }
             } else {
-                onAuthError("Tipo de credencial não suportado")
+                onAuthError("Tipo de credencial retornado não é suportado.")
             }
         } catch (e: GetCredentialCancellationException) {
-            Log.w("Auth", "Google Sign-In cancelado ou dispensado: ${e.message}", e)
+            Log.i("AuthScreen", "Login Google cancelado ou dispensado pelo usuário.")
             onAuthCancelled()
+        } catch (e: com.google.firebase.auth.FirebaseAuthInvalidCredentialsException) {
+            Log.e("AuthScreen", "Credencial Firebase inválida", e)
+            onAuthError("Credenciais inválidas. Verifique o certificado SHA-1 do APK e o Web Client ID no Console Firebase.")
+        } catch (e: com.google.firebase.auth.FirebaseAuthException) {
+            Log.e("AuthScreen", "Erro no Firebase Auth: ${e.errorCode}", e)
+            onAuthError("Erro na autenticação Firebase (${e.errorCode ?: "desconhecido"}).")
         } catch (e: Exception) {
-            Log.e("Auth", "Erro no Google Sign-In", e)
-            onAuthError(e.localizedMessage ?: "Falha ao autenticar")
+            Log.e("AuthScreen", "Falha na autenticação do Google Sign-In", e)
+            val msg = e.localizedMessage ?: "Erro de autenticação ou rede."
+            onAuthError(msg)
         }
     }
 }

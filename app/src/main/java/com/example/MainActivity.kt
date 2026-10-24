@@ -244,10 +244,23 @@ fun MainAppScaffold(
     if (showQuickActionModal) {
         QuickActionModal(
             onDismiss = { showQuickActionModal = false },
-            onAddClient = { selectedTab = 1 },
-            onAddReceivable = { selectedTab = 2 },
-            onAddExpense = { selectedTab = 2 },
-            onAddPayment = { selectedTab = 2 }
+            onAddClient = {
+                showQuickActionModal = false
+                viewModel.triggerAddClientForm()
+                selectedTab = 1
+            },
+            onAddReceivable = {
+                showQuickActionModal = false
+                selectedTab = 2
+            },
+            onAddExpense = {
+                showQuickActionModal = false
+                selectedTab = 2
+            },
+            onAddPayment = {
+                showQuickActionModal = false
+                selectedTab = 2
+            }
         )
     }
 }

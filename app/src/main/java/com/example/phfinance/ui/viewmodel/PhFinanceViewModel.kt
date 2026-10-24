@@ -74,6 +74,7 @@ class PhFinanceViewModel(application: Application) : AndroidViewModel(applicatio
     val selectedCompetence = MutableStateFlow(DateUtils.getCurrentCompetence())
     val isDarkMode = MutableStateFlow(true)
     val searchQuery = MutableStateFlow("")
+    val triggerOpenAddClient = MutableStateFlow(false)
 
     val clients: StateFlow<List<ClientEntity>>
     val allClients: StateFlow<List<ClientEntity>>
@@ -297,6 +298,14 @@ class PhFinanceViewModel(application: Application) : AndroidViewModel(applicatio
         isDarkMode.value = !isDarkMode.value
     }
 
+    fun triggerAddClientForm() {
+        triggerOpenAddClient.value = true
+    }
+
+    fun consumeAddClientFormTrigger() {
+        triggerOpenAddClient.value = false
+    }
+
     // Client CRUD
     fun saveClient(
         id: String?,
@@ -307,22 +316,47 @@ class PhFinanceViewModel(application: Application) : AndroidViewModel(applicatio
         email: String,
         agreedValueCents: Long,
         dueDay: Int,
-        notes: String
+        notes: String,
+        onSuccess: (() -> Unit)? = null,
+        onError: ((String) -> Unit)? = null
     ) {
         viewModelScope.launch {
-            val client = ClientEntity(
-                id = id.takeUnless { it.isNullOrBlank() } ?: UUID.randomUUID().toString(),
-                fullName = fullName,
-                nickname = nickname.ifBlank { fullName },
-                phone = phone,
-                whatsapp = whatsapp.ifBlank { phone },
-                email = email,
-                agreedValueCents = agreedValueCents,
-                dueDay = dueDay,
-                notes = notes,
-                clientType = ClientType.ATIVO
-            )
-            repository.saveClient(client)
+            try {
+                val cleanId = id.takeUnless { it.isNullOrBlank() }
+                val existing = if (cleanId != null) repository.getClientById(cleanId) else null
+
+                val clientToSave = if (existing != null) {
+                    existing.copy(
+                        fullName = fullName,
+                        nickname = nickname.ifBlank { fullName },
+                        phone = phone,
+                        whatsapp = whatsapp.ifBlank { phone },
+                        email = email,
+                        agreedValueCents = agreedValueCents,
+                        dueDay = dueDay,
+                        notes = notes,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                } else {
+                    ClientEntity(
+                        id = UUID.randomUUID().toString(),
+                        fullName = fullName,
+                        nickname = nickname.ifBlank { fullName },
+                        phone = phone,
+                        whatsapp = whatsapp.ifBlank { phone },
+                        email = email,
+                        agreedValueCents = agreedValueCents,
+                        dueDay = dueDay,
+                        notes = notes,
+                        clientType = ClientType.ATIVO
+                    )
+                }
+
+                repository.saveClient(clientToSave)
+                onSuccess?.invoke()
+            } catch (e: Exception) {
+                onError?.invoke(e.localizedMessage ?: "Erro ao salvar aluno no banco de dados.")
+            }
         }
     }
 

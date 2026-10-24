@@ -52,7 +52,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -78,6 +83,16 @@ fun ClientsScreen(viewModel: PhFinanceViewModel) {
     var showAddDialog by remember { mutableStateOf(false) }
     var editingClient by remember { mutableStateOf<ClientEntity?>(null) }
     var selectedClientDetail by remember { mutableStateOf<ClientEntity?>(null) }
+
+    val triggerAddClient by viewModel.triggerOpenAddClient.collectAsState()
+
+    LaunchedEffect(triggerAddClient) {
+        if (triggerAddClient) {
+            editingClient = null
+            showAddDialog = true
+            viewModel.consumeAddClientFormTrigger()
+        }
+    }
 
     val filteredClients = allClients.filter { client ->
         val matchesQuery = client.fullName.contains(searchQuery, ignoreCase = true) ||
@@ -182,10 +197,24 @@ fun ClientsScreen(viewModel: PhFinanceViewModel) {
                 showAddDialog = false
                 editingClient = null
             },
-            onSave = { id, fullName, nickname, phone, whatsapp, email, valueCents, dueDay, notes ->
-                viewModel.saveClient(id, fullName, nickname, phone, whatsapp, email, valueCents, dueDay, notes)
-                showAddDialog = false
-                editingClient = null
+            onSave = { id, fullName, nickname, phone, whatsapp, email, valueCents, dueDay, notes, onSuccess, onError ->
+                viewModel.saveClient(
+                    id = id,
+                    fullName = fullName,
+                    nickname = nickname,
+                    phone = phone,
+                    whatsapp = whatsapp,
+                    email = email,
+                    agreedValueCents = valueCents,
+                    dueDay = dueDay,
+                    notes = notes,
+                    onSuccess = {
+                        showAddDialog = false
+                        editingClient = null
+                        onSuccess()
+                    },
+                    onError = onError
+                )
             }
         )
     }
@@ -308,7 +337,19 @@ fun ClientListItemCard(
 fun ClientFormDialog(
     client: ClientEntity?,
     onDismiss: () -> Unit,
-    onSave: (String?, String, String, String, String, String, Long, Int, String) -> Unit
+    onSave: (
+        id: String?,
+        fullName: String,
+        nickname: String,
+        phone: String,
+        whatsapp: String,
+        email: String,
+        agreedValueCents: Long,
+        dueDay: Int,
+        notes: String,
+        onSuccess: () -> Unit,
+        onError: (String) -> Unit
+    ) -> Unit
 ) {
     var fullName by remember { mutableStateOf(client?.fullName ?: "") }
     var nickname by remember { mutableStateOf(client?.nickname ?: "") }
@@ -319,16 +360,25 @@ fun ClientFormDialog(
     var dueDayText by remember { mutableStateOf(client?.dueDay?.toString() ?: "10") }
     var notes by remember { mutableStateOf(client?.notes ?: "") }
 
-    Dialog(onDismissRequest = onDismiss) {
+    var validationError by remember { mutableStateOf<String?>(null) }
+    var isSaving by remember { mutableStateOf(false) }
+
+    Dialog(
+        onDismissRequest = { if (!isSaving) onDismiss() },
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
         Card(
             shape = RoundedCornerShape(16.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            modifier = Modifier.padding(16.dp)
+            modifier = Modifier
+                .fillMaxWidth(0.92f)
+                .padding(16.dp)
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(20.dp)
+                    .verticalScroll(rememberScrollState())
             ) {
                 Text(
                     text = if (client == null) "Cadastrar Aluno" else "Editar Aluno",
@@ -340,9 +390,14 @@ fun ClientFormDialog(
 
                 OutlinedTextField(
                     value = fullName,
-                    onValueChange = { fullName = it },
-                    label = { Text("Nome Completo") },
-                    modifier = Modifier.fillMaxWidth()
+                    onValueChange = {
+                        fullName = it
+                        validationError = null
+                    },
+                    label = { Text("Nome Completo *") },
+                    isError = validationError != null && fullName.isBlank(),
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !isSaving
                 )
 
                 Spacer(modifier = Modifier.height(8.dp))
@@ -352,7 +407,8 @@ fun ClientFormDialog(
                         value = nickname,
                         onValueChange = { nickname = it },
                         label = { Text("Apelido") },
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f),
+                        enabled = !isSaving
                     )
                     OutlinedTextField(
                         value = phone,
@@ -362,7 +418,8 @@ fun ClientFormDialog(
                         },
                         label = { Text("Telefone/DDD") },
                         modifier = Modifier.weight(1f),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone)
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                        enabled = !isSaving
                     )
                 }
 
@@ -371,17 +428,25 @@ fun ClientFormDialog(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
                         value = valueText,
-                        onValueChange = { valueText = it },
-                        label = { Text("Valor Mensal (R$)") },
+                        onValueChange = {
+                            valueText = it
+                            validationError = null
+                        },
+                        label = { Text("Valor Mensal (R$) *") },
                         modifier = Modifier.weight(1f),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        enabled = !isSaving
                     )
                     OutlinedTextField(
                         value = dueDayText,
-                        onValueChange = { dueDayText = it },
-                        label = { Text("Dia Vencimento") },
+                        onValueChange = {
+                            dueDayText = it
+                            validationError = null
+                        },
+                        label = { Text("Dia Vencimento *") },
                         modifier = Modifier.weight(1f),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        enabled = !isSaving
                     )
                 }
 
@@ -391,8 +456,18 @@ fun ClientFormDialog(
                     value = notes,
                     onValueChange = { notes = it },
                     label = { Text("Observações Administrativas") },
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !isSaving
                 )
+
+                validationError?.let { err ->
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = err,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
 
                 Spacer(modifier = Modifier.height(16.dp))
 
@@ -400,20 +475,74 @@ fun ClientFormDialog(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.End
                 ) {
-                    OutlinedButton(onClick = onDismiss) {
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        enabled = !isSaving
+                    ) {
                         Text("Cancelar")
                     }
                     Spacer(modifier = Modifier.width(8.dp))
                     Button(
+                        enabled = !isSaving,
                         onClick = {
-                            if (fullName.isNotBlank()) {
-                                val valCents = CurrencyUtils.parseToCents(valueText)
-                                val dueDay = dueDayText.toIntOrNull() ?: 10
-                                onSave(client?.id, fullName, nickname, phone, whatsapp, email, valCents, dueDay, notes)
+                            validationError = null
+                            val trimmedName = fullName.trim()
+                            if (trimmedName.isBlank()) {
+                                validationError = "O nome completo do aluno é obrigatório."
+                                return@Button
                             }
+
+                            val valCents = try {
+                                val clean = valueText.replace(",", ".").trim()
+                                if (clean.isBlank()) 0L else (clean.toDouble() * 100).toLong()
+                            } catch (e: Exception) {
+                                -1L
+                            }
+
+                            if (valCents < 0L) {
+                                validationError = "Informe um valor mensal válido e não negativo."
+                                return@Button
+                            }
+
+                            val dueDay = dueDayText.trim().toIntOrNull()
+                            if (dueDay == null || dueDay !in 1..31) {
+                                validationError = "O dia de vencimento deve estar entre 1 e 31."
+                                return@Button
+                            }
+
+                            isSaving = true
+                            onSave(
+                                client?.id,
+                                trimmedName,
+                                nickname.trim(),
+                                phone.trim(),
+                                whatsapp.trim(),
+                                email.trim(),
+                                valCents,
+                                dueDay,
+                                notes.trim(),
+                                /* onSuccess */ {
+                                    isSaving = false
+                                    onDismiss()
+                                },
+                                /* onError */ { err ->
+                                    isSaving = false
+                                    validationError = err
+                                }
+                            )
                         }
                     ) {
-                        Text("Salvar")
+                        if (isSaving) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                color = MaterialTheme.colorScheme.onPrimary,
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Salvando...")
+                        } else {
+                            Text("Salvar")
+                        }
                     }
                 }
             }

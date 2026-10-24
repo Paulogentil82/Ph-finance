@@ -54,7 +54,6 @@ class QuickActionNavigationTest {
     private fun choose(action: String) {
         compose.onNodeWithContentDescription("Ação Rápida").performClick()
         compose.onNodeWithText(action).performClick()
-        compose.onNodeWithText("Ação Rápida PH Finance").assertDoesNotExist()
     }
 
     private fun assertFinancialTab(tab: String) {

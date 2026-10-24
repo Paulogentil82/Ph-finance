@@ -3,10 +3,12 @@ package com.example.phfinance.util
 import android.content.Context
 import android.content.Intent
 import androidx.core.content.FileProvider
+import com.example.phfinance.data.local.BankTransactionEntity
 import com.example.phfinance.data.local.ClientEntity
 import com.example.phfinance.data.local.ExpenseEntity
 import com.example.phfinance.data.local.PaymentEntity
 import com.example.phfinance.data.local.ReceivableEntity
+import com.example.phfinance.data.local.ReconciliationEntity
 import com.example.phfinance.data.model.CurrencyUtils
 import com.example.phfinance.data.model.DateUtils
 import java.io.File
@@ -227,6 +229,129 @@ object ReportExporter {
         """.trimIndent()
 
         shareTextFile(context, receiptText, "recibo_${payment.id.take(8)}.txt", "text/plain")
+    }
+
+    fun exportReconciliationCsv(
+        context: Context,
+        accountName: String,
+        transactions: List<BankTransactionEntity>,
+        reconciliations: List<ReconciliationEntity>
+    ) {
+        val recMap = reconciliations.associateBy { it.bankTransactionId }
+        val csvHeader = "Data,Conta,Descricao Extrato,Tipo,Valor,Situacao,Tipo Conciliacao,Valor Conciliado,Taxa Retida\n"
+        val csvBody = transactions.joinToString("\n") { tx ->
+            val dateStr = DateUtils.formatDate(tx.transactionDate)
+            val valStr = CurrencyUtils.formatCents(tx.amountCents)
+            val rec = recMap[tx.id]
+            val recTypeStr = rec?.reconciliationType?.label ?: "-"
+            val recValStr = rec?.let { CurrencyUtils.formatCents(it.reconciledAmountCents) } ?: "-"
+            val feeStr = rec?.let { CurrencyUtils.formatCents(it.feeCents) } ?: "-"
+
+            "\"$dateStr\",\"$accountName\",\"${tx.memo.replace("\"", "'")}\",\"${tx.movementType.label}\",\"$valStr\",\"${tx.status.label}\",\"$recTypeStr\",\"$recValStr\",\"$feeStr\""
+        }
+
+        val fileContent = csvHeader + csvBody
+        val fileName = "conciliacao_${accountName.replace(" ", "_").lowercase()}.csv"
+        shareTextFile(context, fileContent, fileName, "text/csv")
+    }
+
+    fun exportReconciliationPdf(
+        context: Context,
+        accountName: String,
+        transactions: List<BankTransactionEntity>,
+        reconciliations: List<ReconciliationEntity>
+    ) {
+        val pdfDocument = android.graphics.pdf.PdfDocument()
+        val pageInfo = android.graphics.pdf.PdfDocument.PageInfo.Builder(595, 842, 1).create()
+        val page = pdfDocument.startPage(pageInfo)
+        val canvas = page.canvas
+
+        val titlePaint = android.graphics.Paint().apply {
+            color = android.graphics.Color.BLACK
+            textSize = 15f
+            isFakeBoldText = true
+        }
+        val subtitlePaint = android.graphics.Paint().apply {
+            color = android.graphics.Color.DKGRAY
+            textSize = 10f
+        }
+        val boldBodyPaint = android.graphics.Paint().apply {
+            color = android.graphics.Color.BLACK
+            textSize = 9f
+            isFakeBoldText = true
+        }
+        val bodyPaint = android.graphics.Paint().apply {
+            color = android.graphics.Color.BLACK
+            textSize = 8.5f
+        }
+
+        var y = 35f
+        canvas.drawText("PH PERSONAL - RELATÓRIO DE CONCILIAÇÃO BANCÁRIA", 30f, y, titlePaint)
+        y += 18f
+        canvas.drawText("Conta Financeira: $accountName | Emissão: ${DateUtils.formatDate(System.currentTimeMillis())}", 30f, y, subtitlePaint)
+        y += 15f
+
+        val totalImported = transactions.size
+        val reconciledCount = transactions.count { it.status == com.example.phfinance.data.model.BankTransactionStatus.CONCILIADA }
+        val pendingCount = transactions.count { it.status == com.example.phfinance.data.model.BankTransactionStatus.PENDENTE }
+        val duplicateCount = transactions.count { it.status == com.example.phfinance.data.model.BankTransactionStatus.SUSPEITA_DUPLICIDADE }
+
+        canvas.drawText("Resumo: $totalImported transações ($reconciledCount conciliadas, $pendingCount pendentes, $duplicateCount suspeitas de duplicidade)", 30f, y, subtitlePaint)
+        y += 18f
+        canvas.drawLine(30f, y, 565f, y, titlePaint)
+        y += 15f
+
+        canvas.drawText("DATA", 30f, y, boldBodyPaint)
+        canvas.drawText("HISTÓRICO / MEMO", 90f, y, boldBodyPaint)
+        canvas.drawText("VALOR", 350f, y, boldBodyPaint)
+        canvas.drawText("SITUAÇÃO", 440f, y, boldBodyPaint)
+        y += 12f
+        canvas.drawLine(30f, y, 565f, y, subtitlePaint)
+        y += 12f
+
+        for (tx in transactions.take(35)) {
+            val dateStr = DateUtils.formatDate(tx.transactionDate)
+            val memoShort = if (tx.memo.length > 38) tx.memo.take(35) + "..." else tx.memo
+            val valStr = CurrencyUtils.formatCents(tx.amountCents)
+            val statusStr = tx.status.label
+
+            canvas.drawText(dateStr, 30f, y, bodyPaint)
+            canvas.drawText(memoShort, 90f, y, bodyPaint)
+            canvas.drawText(valStr, 350f, y, bodyPaint)
+            canvas.drawText(statusStr, 440f, y, bodyPaint)
+            y += 14f
+
+            if (y > 800f) break
+        }
+
+        pdfDocument.finishPage(page)
+
+        try {
+            val cacheDir = File(context.cacheDir, "reports")
+            if (!cacheDir.exists()) cacheDir.mkdirs()
+
+            val fileName = "relatorio_conciliacao_${System.currentTimeMillis()}.pdf"
+            val file = File(cacheDir, fileName)
+            FileOutputStream(file).use { out ->
+                pdfDocument.writeTo(out)
+            }
+            pdfDocument.close()
+
+            val authority = "${context.packageName}.fileprovider"
+            val uri = FileProvider.getUriForFile(context, authority, file)
+
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "application/pdf"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+
+            val chooser = Intent.createChooser(intent, "Compartilhar Relatório de Conciliação (PDF)")
+            chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(chooser)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 
     private fun shareTextFile(

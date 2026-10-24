@@ -17,19 +17,30 @@ import com.example.phfinance.data.local.PaymentEntity
 import com.example.phfinance.data.local.PhFinanceDao
 import com.example.phfinance.data.local.ReceivableEntity
 import com.example.phfinance.data.local.ServiceEntity
+import com.example.phfinance.data.local.BankImportEntity
+import com.example.phfinance.data.local.BankTransactionEntity
+import com.example.phfinance.data.local.ReconciliationAuditEntity
+import com.example.phfinance.data.local.ReconciliationEntity
+import com.example.phfinance.data.model.BankTransactionStatus
 import com.example.phfinance.data.model.BillingPeriod
 import com.example.phfinance.data.model.ClientType
 import com.example.phfinance.data.model.ContractStatus
 import com.example.phfinance.data.model.CurrencyUtils
 import com.example.phfinance.data.model.DateUtils
 import com.example.phfinance.data.model.ExpenseStatus
+import com.example.phfinance.data.model.MatchConfidence
 import com.example.phfinance.data.model.MovementType
+import com.example.phfinance.data.model.ParsedBankStatement
 import com.example.phfinance.data.model.PaymentMethod
 import com.example.phfinance.data.model.ReceivableStatus
+import com.example.phfinance.data.model.ReconciliationMatchSuggestion
+import com.example.phfinance.data.model.ReconciliationType
+import com.example.phfinance.util.reconciliation.ReconciliationEngine
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import java.util.Calendar
 import java.util.UUID
+import kotlin.math.abs
 
 class PhFinanceRepository(private val dao: PhFinanceDao) {
 
@@ -552,5 +563,499 @@ class PhFinanceRepository(private val dao: PhFinanceDao) {
             throw IllegalStateException("Competência ${receivable.competence} possui Fechamento Definitivo e está bloqueada para cancelamento de cobranças.")
         }
         dao.cancelReceivable(receivableId)
+    }
+
+    // --- BANK RECONCILIATION ---
+    fun observeAllBankImports(): Flow<List<BankImportEntity>> = dao.observeAllBankImports()
+    fun observeBankImportsByAccount(accountId: String): Flow<List<BankImportEntity>> = dao.observeBankImportsByAccount(accountId)
+    fun observeAllBankTransactions(): Flow<List<BankTransactionEntity>> = dao.observeAllBankTransactions()
+    fun observeBankTransactionsByAccount(accountId: String): Flow<List<BankTransactionEntity>> = dao.observeBankTransactionsByAccount(accountId)
+    fun observeAllReconciliations(): Flow<List<ReconciliationEntity>> = dao.observeAllReconciliations()
+    fun observeActiveReconciliations(): Flow<List<ReconciliationEntity>> = dao.observeActiveReconciliations()
+    fun observeAllReconciliationAudits(): Flow<List<ReconciliationAuditEntity>> = dao.observeAllReconciliationAudits()
+    fun observeReconciliationAuditsByReconciliation(recId: String): Flow<List<ReconciliationAuditEntity>> = dao.observeReconciliationAuditsByReconciliation(recId)
+
+    suspend fun importBankStatement(statement: ParsedBankStatement): Pair<BankImportEntity, Int> {
+        val account = dao.getAccountById(statement.accountId)
+            ?: throw IllegalArgumentException("Conta bancária de destino não encontrada.")
+
+        var totalCredits = 0L
+        var totalDebits = 0L
+        statement.transactions.forEach {
+            if (it.amountCents >= 0) totalCredits += it.amountCents
+            else totalDebits += abs(it.amountCents)
+        }
+
+        val importEntity = BankImportEntity(
+            id = UUID.randomUUID().toString(),
+            accountId = statement.accountId,
+            fileName = statement.fileName,
+            fileType = statement.fileType,
+            fileSizeBytes = statement.fileSizeBytes,
+            importTimestamp = System.currentTimeMillis(),
+            startDate = statement.startDate,
+            endDate = statement.endDate,
+            totalTransactions = statement.transactions.size,
+            totalCreditsCents = totalCredits,
+            totalDebitsCents = totalDebits,
+            status = "PROCESSADO"
+        )
+        dao.insertBankImport(importEntity)
+
+        var newTransactionsCount = 0
+        val toInsert = mutableListOf<BankTransactionEntity>()
+
+        for (parsed in statement.transactions) {
+            val rawHash = ReconciliationEngine.computeRawHash(
+                statement.accountId,
+                parsed.date,
+                parsed.amountCents,
+                parsed.memo
+            )
+
+            // Idempotency: check if identical fitId exists for this account
+            val existingByFitId = dao.getBankTransactionByFitId(statement.accountId, parsed.fitId)
+            if (existingByFitId != null) {
+                // If it already exists and is active/processed, skip to avoid duplicates on re-import
+                continue
+            }
+
+            // Check if duplicate rawHash exists (same account, date, amount, normalized memo)
+            val existingByHash = dao.getBankTransactionsByRawHash(statement.accountId, rawHash)
+            val initialStatus = if (existingByHash.isNotEmpty()) {
+                BankTransactionStatus.SUSPEITA_DUPLICIDADE
+            } else {
+                BankTransactionStatus.PENDENTE
+            }
+
+            val txEntity = BankTransactionEntity(
+                id = UUID.randomUUID().toString(),
+                importId = importEntity.id,
+                accountId = statement.accountId,
+                fitId = parsed.fitId,
+                transactionDate = parsed.date,
+                amountCents = parsed.amountCents,
+                movementType = parsed.movementType,
+                memo = parsed.memo,
+                payee = parsed.payee,
+                status = initialStatus,
+                reconciliationId = null,
+                rawHash = rawHash,
+                createdAt = System.currentTimeMillis()
+            )
+            toInsert.add(txEntity)
+            newTransactionsCount++
+        }
+
+        if (toInsert.isNotEmpty()) {
+            dao.insertBankTransactions(toInsert)
+        }
+
+        return Pair(importEntity, newTransactionsCount)
+    }
+
+    suspend fun getMatchSuggestion(bankTxId: String): ReconciliationMatchSuggestion {
+        val tx = dao.getBankTransactionById(bankTxId)
+            ?: return ReconciliationMatchSuggestion(
+                bankTransactionId = bankTxId,
+                confidence = MatchConfidence.INSUFICIENTE,
+                justification = "Transação não encontrada."
+            )
+
+        val payments = dao.observeAllPayments().first()
+        val receivables = dao.observeAllReceivables().first()
+        val expenses = dao.observeAllExpenses().first()
+        val clients = dao.observeAllClients().first()
+
+        return ReconciliationEngine.findBestMatch(tx, payments, receivables, expenses, clients)
+    }
+
+    /**
+     * Fluxo A: Link an imported bank credit to an ALREADY REGISTERED payment.
+     * Prevents duplicate cash entry because cash was already credited upon original payment registration.
+     */
+    suspend fun reconcileFluxoA(
+        bankTxId: String,
+        paymentId: String,
+        user: String = "Proprietário"
+    ): ReconciliationEntity {
+        val tx = dao.getBankTransactionById(bankTxId)
+            ?: throw IllegalArgumentException("Transação bancária não encontrada.")
+        val payment = dao.getPaymentById(paymentId)
+            ?: throw IllegalArgumentException("Pagamento com id $paymentId não encontrado.")
+
+        val reconciliation = ReconciliationEntity(
+            id = UUID.randomUUID().toString(),
+            bankTransactionId = tx.id,
+            accountId = tx.accountId,
+            reconciliationType = ReconciliationType.VINCULO_PAGAMENTO_EXISTENTE,
+            paymentId = payment.id,
+            receivableId = payment.receivableId,
+            reconciledAmountCents = abs(tx.amountCents),
+            feeCents = payment.feeCents,
+            grossAmountCents = payment.grossAmountCents,
+            reconciledAt = System.currentTimeMillis(),
+            reconciledBy = user,
+            status = "ATIVA",
+            notes = "Vinculado ao pagamento já existente ${payment.id} sem duplicação de caixa."
+        )
+        dao.insertReconciliation(reconciliation)
+
+        dao.updateBankTransactionStatus(
+            id = tx.id,
+            status = BankTransactionStatus.CONCILIADA,
+            reconciliationId = reconciliation.id
+        )
+
+        dao.insertReconciliationAudit(
+            ReconciliationAuditEntity(
+                id = UUID.randomUUID().toString(),
+                reconciliationId = reconciliation.id,
+                bankTransactionId = tx.id,
+                actionType = "CRIACAO_VINCULO",
+                timestamp = System.currentTimeMillis(),
+                user = user,
+                detailsJson = "Fluxo A: Conciliado com pagamento ${payment.id} (Recebível ${payment.receivableId})"
+            )
+        )
+
+        return reconciliation
+    }
+
+    /**
+     * Fluxo B: Settle a pending receivable from an imported bank credit.
+     * Creates payment record, updates receivable received amount and status, updates account balance, and logs account movement.
+     * Strictly enforces closed monthly period locks.
+     */
+    suspend fun reconcileFluxoB(
+        bankTxId: String,
+        receivableId: String,
+        feeCents: Long = 0L,
+        paymentMethod: PaymentMethod = PaymentMethod.PIX,
+        user: String = "Proprietário"
+    ): ReconciliationEntity {
+        val tx = dao.getBankTransactionById(bankTxId)
+            ?: throw IllegalArgumentException("Transação bancária não encontrada.")
+        val receivable = dao.getReceivableById(receivableId)
+            ?: throw IllegalArgumentException("Cobrança/Recebível com id $receivableId não encontrado.")
+
+        // Enforce monthly closure lock
+        val closure = dao.getClosureByCompetence(receivable.competence)
+        if (closure?.status == "DEFINITIVO") {
+            throw IllegalStateException("Competência ${receivable.competence} possui Fechamento Definitivo e está bloqueada para novos recebimentos.")
+        }
+
+        val netAmountCents = abs(tx.amountCents)
+        val grossAmountCents = netAmountCents + feeCents
+
+        // 1. Create Payment
+        val payment = PaymentEntity(
+            id = UUID.randomUUID().toString(),
+            receivableId = receivable.id,
+            clientId = receivable.clientId,
+            grossAmountCents = grossAmountCents,
+            feeCents = feeCents,
+            netAmountCents = netAmountCents,
+            paymentDate = tx.transactionDate,
+            destinationAccountId = tx.accountId,
+            paymentMethod = paymentMethod,
+            transactionRef = tx.fitId,
+            notes = "Conciliação bancária: ${tx.memo}"
+        )
+        dao.insertPayment(payment)
+
+        // 2. Update Receivable
+        val newReceivedTotal = receivable.receivedValueCents + grossAmountCents
+        val newStatus = if (newReceivedTotal >= receivable.netValueCents) {
+            ReceivableStatus.QUITADA
+        } else {
+            ReceivableStatus.PARCIALMENTE_PAGA
+        }
+        dao.updateReceivable(
+            receivable.copy(
+                receivedValueCents = newReceivedTotal,
+                status = newStatus,
+                updatedAt = System.currentTimeMillis()
+            )
+        )
+
+        // 3. Update Destination Financial Account Balance
+        dao.updateAccountBalance(tx.accountId, netAmountCents)
+
+        // 4. Log Account Movement
+        val client = dao.getClientById(receivable.clientId)
+        val clientName = client?.fullName ?: "Aluno"
+        dao.insertMovement(
+            AccountMovementEntity(
+                id = UUID.randomUUID().toString(),
+                accountId = tx.accountId,
+                type = MovementType.ENTRADA,
+                amountCents = netAmountCents,
+                date = tx.transactionDate,
+                description = "Recebimento Conciliado: $clientName (${receivable.competence})",
+                relatedEntityId = payment.id
+            )
+        )
+
+        // 5. Create Reconciliation record
+        val reconciliation = ReconciliationEntity(
+            id = UUID.randomUUID().toString(),
+            bankTransactionId = tx.id,
+            accountId = tx.accountId,
+            reconciliationType = ReconciliationType.NOVO_RECEBIMENTO,
+            paymentId = payment.id,
+            receivableId = receivable.id,
+            reconciledAmountCents = netAmountCents,
+            feeCents = feeCents,
+            grossAmountCents = grossAmountCents,
+            reconciledAt = System.currentTimeMillis(),
+            reconciledBy = user,
+            status = "ATIVA",
+            notes = "Fluxo B: Baixa de recebível via conciliação bancária."
+        )
+        dao.insertReconciliation(reconciliation)
+
+        // 6. Update Transaction status
+        dao.updateBankTransactionStatus(
+            id = tx.id,
+            status = BankTransactionStatus.CONCILIADA,
+            reconciliationId = reconciliation.id
+        )
+
+        // 7. Audit log
+        dao.insertReconciliationAudit(
+            ReconciliationAuditEntity(
+                id = UUID.randomUUID().toString(),
+                reconciliationId = reconciliation.id,
+                bankTransactionId = tx.id,
+                actionType = "CRIACAO_NOVO_RECEBIMENTO",
+                timestamp = System.currentTimeMillis(),
+                user = user,
+                detailsJson = "Fluxo B: Pagamento ${payment.id} criado para recebível ${receivable.id} (Líquido: ${CurrencyUtils.formatCents(netAmountCents)}, Taxa: ${CurrencyUtils.formatCents(feeCents)})"
+            )
+        )
+
+        return reconciliation
+    }
+
+    /**
+     * Reconcile Outflow (Debit) with Expense.
+     * If expense is PENDENTE, marks it PAGO, decreases account balance and logs account movement.
+     */
+    suspend fun reconcileExpense(
+        bankTxId: String,
+        expenseId: String,
+        user: String = "Proprietário"
+    ): ReconciliationEntity {
+        val tx = dao.getBankTransactionById(bankTxId)
+            ?: throw IllegalArgumentException("Transação bancária não encontrada.")
+        val expense = dao.getExpenseById(expenseId)
+            ?: throw IllegalArgumentException("Despesa com id $expenseId não encontrada.")
+
+        val debitAmount = abs(tx.amountCents)
+
+        if (expense.status != ExpenseStatus.PAGO) {
+            val closure = dao.getClosureByCompetence(expense.competence)
+            if (closure?.status == "DEFINITIVO") {
+                throw IllegalStateException("Competência ${expense.competence} possui Fechamento Definitivo e está bloqueada para liquidação de despesas.")
+            }
+
+            dao.updateExpense(
+                expense.copy(
+                    status = ExpenseStatus.PAGO,
+                    paymentDate = tx.transactionDate,
+                    accountId = tx.accountId,
+                    updatedAt = System.currentTimeMillis()
+                )
+            )
+
+            dao.updateAccountBalance(tx.accountId, -debitAmount)
+
+            dao.insertMovement(
+                AccountMovementEntity(
+                    id = UUID.randomUUID().toString(),
+                    accountId = tx.accountId,
+                    type = MovementType.SAIDA,
+                    amountCents = debitAmount,
+                    date = tx.transactionDate,
+                    description = "Despesa Conciliada: ${expense.description}",
+                    relatedEntityId = expense.id
+                )
+            )
+        }
+
+        val reconciliation = ReconciliationEntity(
+            id = UUID.randomUUID().toString(),
+            bankTransactionId = tx.id,
+            accountId = tx.accountId,
+            reconciliationType = ReconciliationType.NOVA_DESPESA,
+            expenseId = expense.id,
+            reconciledAmountCents = debitAmount,
+            grossAmountCents = debitAmount,
+            reconciledAt = System.currentTimeMillis(),
+            reconciledBy = user,
+            status = "ATIVA",
+            notes = "Despesa conciliada: ${expense.description}"
+        )
+        dao.insertReconciliation(reconciliation)
+
+        dao.updateBankTransactionStatus(
+            id = tx.id,
+            status = BankTransactionStatus.CONCILIADA,
+            reconciliationId = reconciliation.id
+        )
+
+        dao.insertReconciliationAudit(
+            ReconciliationAuditEntity(
+                id = UUID.randomUUID().toString(),
+                reconciliationId = reconciliation.id,
+                bankTransactionId = tx.id,
+                actionType = "CRIACAO_NOVA_DESPESA",
+                timestamp = System.currentTimeMillis(),
+                user = user,
+                detailsJson = "Despesa ${expense.id} vinculada e baixada via conciliação bancária."
+            )
+        )
+
+        return reconciliation
+    }
+
+    /**
+     * Undo reconciliation with complete audit trail and financial reversal.
+     */
+    suspend fun undoReconciliation(
+        reconciliationId: String,
+        reason: String,
+        user: String = "Proprietário"
+    ) {
+        val rec = dao.getReconciliationById(reconciliationId) ?: return
+        if (rec.status == "DESFEITA") return
+
+        val tx = dao.getBankTransactionById(rec.bankTransactionId)
+
+        when (rec.reconciliationType) {
+            ReconciliationType.VINCULO_PAGAMENTO_EXISTENTE -> {
+                // Fluxo A: No cash changes were introduced; simply unlink
+            }
+            ReconciliationType.NOVO_RECEBIMENTO -> {
+                // Fluxo B: Reverse the payment, receivable received value, and account balance
+                val payment = rec.paymentId?.let { dao.getPaymentById(it) }
+                val receivable = rec.receivableId?.let { dao.getReceivableById(it) }
+
+                if (receivable != null) {
+                    val closure = dao.getClosureByCompetence(receivable.competence)
+                    if (closure?.status == "DEFINITIVO") {
+                        throw IllegalStateException("Competência ${receivable.competence} possui Fechamento Definitivo e não permite desfazimento.")
+                    }
+
+                    val updatedReceived = (receivable.receivedValueCents - rec.grossAmountCents).coerceAtLeast(0L)
+                    val updatedStatus = if (updatedReceived <= 0L) ReceivableStatus.PENDENTE else ReceivableStatus.PARCIALMENTE_PAGA
+                    dao.updateReceivable(
+                        receivable.copy(
+                            receivedValueCents = updatedReceived,
+                            status = updatedStatus,
+                            updatedAt = System.currentTimeMillis()
+                        )
+                    )
+                }
+
+                if (payment != null) {
+                    dao.deletePayment(payment.id)
+                }
+
+                // Revert account balance
+                dao.updateAccountBalance(rec.accountId, -rec.reconciledAmountCents)
+
+                // Log reversal movement
+                dao.insertMovement(
+                    AccountMovementEntity(
+                        id = UUID.randomUUID().toString(),
+                        accountId = rec.accountId,
+                        type = MovementType.SAIDA,
+                        amountCents = rec.reconciledAmountCents,
+                        date = System.currentTimeMillis(),
+                        description = "Estorno de Conciliação Bancária: ${reason.ifBlank { "Desfazimento" }}",
+                        relatedEntityId = rec.id
+                    )
+                )
+            }
+            ReconciliationType.NOVA_DESPESA -> {
+                val expense = rec.expenseId?.let { dao.getExpenseById(it) }
+                if (expense != null) {
+                    val closure = dao.getClosureByCompetence(expense.competence)
+                    if (closure?.status == "DEFINITIVO") {
+                        throw IllegalStateException("Competência ${expense.competence} possui Fechamento Definitivo e não permite desfazimento.")
+                    }
+
+                    dao.updateExpense(
+                        expense.copy(
+                            status = ExpenseStatus.PENDENTE,
+                            paymentDate = null,
+                            updatedAt = System.currentTimeMillis()
+                        )
+                    )
+                    dao.updateAccountBalance(rec.accountId, rec.reconciledAmountCents)
+                    dao.insertMovement(
+                        AccountMovementEntity(
+                            id = UUID.randomUUID().toString(),
+                            accountId = rec.accountId,
+                            type = MovementType.ENTRADA,
+                            amountCents = rec.reconciledAmountCents,
+                            date = System.currentTimeMillis(),
+                            description = "Estorno de Despesa Conciliada: ${reason.ifBlank { "Desfazimento" }}",
+                            relatedEntityId = rec.id
+                        )
+                    )
+                }
+            }
+        }
+
+        // Update reconciliation status
+        dao.updateReconciliation(
+            rec.copy(
+                status = "DESFEITA",
+                revertReason = reason,
+                revertedAt = System.currentTimeMillis(),
+                revertedBy = user
+            )
+        )
+
+        // Reset bank transaction status to PENDENTE
+        if (tx != null) {
+            dao.updateBankTransactionStatus(
+                id = tx.id,
+                status = BankTransactionStatus.PENDENTE,
+                reconciliationId = null
+            )
+        }
+
+        // Audit entry
+        dao.insertReconciliationAudit(
+            ReconciliationAuditEntity(
+                id = UUID.randomUUID().toString(),
+                reconciliationId = rec.id,
+                bankTransactionId = rec.bankTransactionId,
+                actionType = "DESFEITA",
+                timestamp = System.currentTimeMillis(),
+                user = user,
+                detailsJson = "Conciliação desfeita. Motivo: $reason"
+            )
+        )
+    }
+
+    suspend fun ignoreTransaction(bankTxId: String, reason: String = "", user: String = "Proprietário") {
+        dao.updateBankTransactionStatus(
+            id = bankTxId,
+            status = BankTransactionStatus.IGNORADA,
+            reconciliationId = null
+        )
+    }
+
+    suspend fun restoreTransaction(bankTxId: String) {
+        dao.updateBankTransactionStatus(
+            id = bankTxId,
+            status = BankTransactionStatus.PENDENTE,
+            reconciliationId = null
+        )
     }
 }

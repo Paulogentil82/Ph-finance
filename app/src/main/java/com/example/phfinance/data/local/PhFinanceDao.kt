@@ -12,6 +12,7 @@ import com.example.phfinance.data.model.ContractStatus
 import com.example.phfinance.data.model.ExpenseStatus
 import com.example.phfinance.data.model.MovementType
 import com.example.phfinance.data.model.ReceivableStatus
+import com.example.phfinance.data.model.BankTransactionStatus
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -127,6 +128,12 @@ interface PhFinanceDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertPayment(payment: PaymentEntity)
+
+    @Query("SELECT * FROM payments WHERE id = :id LIMIT 1")
+    suspend fun getPaymentById(id: String): PaymentEntity?
+
+    @Query("DELETE FROM payments WHERE id = :paymentId")
+    suspend fun deletePayment(paymentId: String)
 
     // --- EXPENSES ---
     @Query("SELECT * FROM expenses ORDER BY dueDate ASC")
@@ -262,5 +269,87 @@ interface PhFinanceDao {
 
     @Query("DELETE FROM expenses")
     suspend fun clearAllExpenses()
+
+    // --- BANK IMPORTS ---
+    @Query("SELECT * FROM bank_imports ORDER BY importTimestamp DESC")
+    fun observeAllBankImports(): Flow<List<BankImportEntity>>
+
+    @Query("SELECT * FROM bank_imports WHERE accountId = :accountId ORDER BY importTimestamp DESC")
+    fun observeBankImportsByAccount(accountId: String): Flow<List<BankImportEntity>>
+
+    @Query("SELECT * FROM bank_imports WHERE id = :id LIMIT 1")
+    suspend fun getBankImportById(id: String): BankImportEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertBankImport(importEntity: BankImportEntity)
+
+    // --- BANK TRANSACTIONS ---
+    @Query("SELECT * FROM bank_transactions ORDER BY transactionDate DESC, createdAt DESC")
+    fun observeAllBankTransactions(): Flow<List<BankTransactionEntity>>
+
+    @Query("SELECT * FROM bank_transactions WHERE accountId = :accountId ORDER BY transactionDate DESC, createdAt DESC")
+    fun observeBankTransactionsByAccount(accountId: String): Flow<List<BankTransactionEntity>>
+
+    @Query("SELECT * FROM bank_transactions WHERE importId = :importId ORDER BY transactionDate DESC")
+    fun observeBankTransactionsByImport(importId: String): Flow<List<BankTransactionEntity>>
+
+    @Query("SELECT * FROM bank_transactions WHERE id = :id LIMIT 1")
+    suspend fun getBankTransactionById(id: String): BankTransactionEntity?
+
+    @Query("SELECT * FROM bank_transactions WHERE accountId = :accountId AND fitId = :fitId LIMIT 1")
+    suspend fun getBankTransactionByFitId(accountId: String, fitId: String): BankTransactionEntity?
+
+    @Query("SELECT * FROM bank_transactions WHERE accountId = :accountId AND rawHash = :rawHash")
+    suspend fun getBankTransactionsByRawHash(accountId: String, rawHash: String): List<BankTransactionEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertBankTransaction(tx: BankTransactionEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertBankTransactions(txs: List<BankTransactionEntity>)
+
+    @Update
+    suspend fun updateBankTransaction(tx: BankTransactionEntity)
+
+    @Query("UPDATE bank_transactions SET status = :status, reconciliationId = :reconciliationId WHERE id = :id")
+    suspend fun updateBankTransactionStatus(id: String, status: BankTransactionStatus, reconciliationId: String?)
+
+    // --- RECONCILIATIONS ---
+    @Query("SELECT * FROM reconciliations ORDER BY reconciledAt DESC")
+    fun observeAllReconciliations(): Flow<List<ReconciliationEntity>>
+
+    @Query("SELECT * FROM reconciliations WHERE status = 'ATIVA' ORDER BY reconciledAt DESC")
+    fun observeActiveReconciliations(): Flow<List<ReconciliationEntity>>
+
+    @Query("SELECT * FROM reconciliations WHERE id = :id LIMIT 1")
+    suspend fun getReconciliationById(id: String): ReconciliationEntity?
+
+    @Query("SELECT * FROM reconciliations WHERE bankTransactionId = :txId AND status = 'ATIVA' LIMIT 1")
+    suspend fun getActiveReconciliationByTransactionId(txId: String): ReconciliationEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertReconciliation(reconciliation: ReconciliationEntity)
+
+    @Update
+    suspend fun updateReconciliation(reconciliation: ReconciliationEntity)
+
+    // --- RECONCILIATION AUDITS ---
+    @Query("SELECT * FROM reconciliation_audits ORDER BY timestamp DESC")
+    fun observeAllReconciliationAudits(): Flow<List<ReconciliationAuditEntity>>
+
+    @Query("SELECT * FROM reconciliation_audits WHERE reconciliationId = :reconciliationId ORDER BY timestamp DESC")
+    fun observeReconciliationAuditsByReconciliation(reconciliationId: String): Flow<List<ReconciliationAuditEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertReconciliationAudit(audit: ReconciliationAuditEntity)
+
+    @Query("DELETE FROM bank_imports")
+    suspend fun clearAllBankImports()
+
+    @Query("DELETE FROM bank_transactions")
+    suspend fun clearAllBankTransactions()
+
+    @Query("DELETE FROM reconciliations")
+    suspend fun clearAllReconciliations()
 }
 

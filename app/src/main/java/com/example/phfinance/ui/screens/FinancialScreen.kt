@@ -41,6 +41,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
@@ -79,7 +80,10 @@ fun FinancialScreen(viewModel: PhFinanceViewModel) {
     var selectedTab by remember { mutableStateOf(0) }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        TabRow(selectedTabIndex = selectedTab) {
+        ScrollableTabRow(
+            selectedTabIndex = selectedTab,
+            edgePadding = 8.dp
+        ) {
             Tab(
                 selected = selectedTab == 0,
                 onClick = { selectedTab = 0 },
@@ -93,11 +97,16 @@ fun FinancialScreen(viewModel: PhFinanceViewModel) {
             Tab(
                 selected = selectedTab == 2,
                 onClick = { selectedTab = 2 },
-                text = { Text("Fechamento & DRE") }
+                text = { Text("Conciliação") }
             )
             Tab(
                 selected = selectedTab == 3,
                 onClick = { selectedTab = 3 },
+                text = { Text("Fechamento & DRE") }
+            )
+            Tab(
+                selected = selectedTab == 4,
+                onClick = { selectedTab = 4 },
                 text = { Text("Contas & Caixa") }
             )
         }
@@ -105,8 +114,9 @@ fun FinancialScreen(viewModel: PhFinanceViewModel) {
         when (selectedTab) {
             0 -> com.example.phfinance.ui.components.BillingCenterComponent(viewModel)
             1 -> ExpensesTab(viewModel)
-            2 -> com.example.phfinance.ui.components.MonthlyClosureComponent(viewModel)
-            3 -> AccountsTab(viewModel)
+            2 -> ReconciliationScreen(viewModel)
+            3 -> com.example.phfinance.ui.components.MonthlyClosureComponent(viewModel)
+            4 -> AccountsTab(viewModel)
         }
     }
 }

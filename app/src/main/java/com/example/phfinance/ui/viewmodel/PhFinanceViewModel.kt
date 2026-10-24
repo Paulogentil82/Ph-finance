@@ -33,6 +33,17 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.util.UUID
 
+import com.example.phfinance.data.local.BankImportEntity
+import com.example.phfinance.data.local.BankTransactionEntity
+import com.example.phfinance.data.local.ReconciliationAuditEntity
+import com.example.phfinance.data.local.ReconciliationEntity
+import com.example.phfinance.data.model.BankTransactionStatus
+import com.example.phfinance.data.model.CsvConfig
+import com.example.phfinance.data.model.ReconciliationMatchSuggestion
+import com.example.phfinance.util.reconciliation.CsvParser
+import com.example.phfinance.util.reconciliation.OfxParser
+import java.io.InputStream
+
 data class Tuple5<A, B, C, D, E>(
     val acc: A,
     val rec: B,
@@ -71,6 +82,19 @@ class PhFinanceViewModel(application: Application) : AndroidViewModel(applicatio
     val growthParams = MutableStateFlow(com.example.phfinance.util.GrowthSimulationParams())
     val growthProjections: StateFlow<List<com.example.phfinance.util.SimulationMonthProjection>>
 
+    // Reconciliation state flows
+    val bankImports: StateFlow<List<BankImportEntity>>
+    val bankTransactions: StateFlow<List<BankTransactionEntity>>
+    val reconciliations: StateFlow<List<ReconciliationEntity>>
+    val reconciliationAudits: StateFlow<List<ReconciliationAuditEntity>>
+
+    val selectedReconciliationAccountId = MutableStateFlow<String?>(null)
+    val reconciliationFilterStatus = MutableStateFlow("TODAS")
+    val selectedTransactionForMatch = MutableStateFlow<BankTransactionEntity?>(null)
+    val currentMatchSuggestion = MutableStateFlow<ReconciliationMatchSuggestion?>(null)
+    val isReconciling = MutableStateFlow(false)
+    val reconciliationFeedback = MutableStateFlow<String?>(null)
+
     init {
         val db = AppDatabase.getDatabase(application)
         repository = PhFinanceRepository(db.phFinanceDao())
@@ -93,6 +117,10 @@ class PhFinanceViewModel(application: Application) : AndroidViewModel(applicatio
         goal = repository.observeGoal().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
         settings = repository.observeSettings().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
         messageTemplates = repository.observeAllMessageTemplates().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        bankImports = repository.observeAllBankImports().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        bankTransactions = repository.observeAllBankTransactions().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        reconciliations = repository.observeAllReconciliations().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        reconciliationAudits = repository.observeAllReconciliationAudits().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
         val coreFlow = combine(accounts, receivables, payments, expenses, contracts) { acc, rec, pay, exp, con ->
             Tuple5(acc, rec, pay, exp, con)
@@ -502,6 +530,175 @@ class PhFinanceViewModel(application: Application) : AndroidViewModel(applicatio
             } catch (e: Exception) {
                 e.printStackTrace()
             }
+        }
+    }
+
+    // --- BANK RECONCILIATION ACTIONS ---
+
+    fun setReconciliationAccount(accountId: String?) {
+        selectedReconciliationAccountId.value = accountId
+    }
+
+    fun setReconciliationFilter(filter: String) {
+        reconciliationFilterStatus.value = filter
+    }
+
+    fun importOfxStream(
+        inputStream: InputStream,
+        accountId: String,
+        fileName: String,
+        fileSize: Long,
+        onResult: (Boolean, String) -> Unit
+    ) {
+        viewModelScope.launch {
+            try {
+                isReconciling.value = true
+                val parsed = OfxParser.parse(inputStream, accountId, fileName, fileSize)
+                val (_, count) = repository.importBankStatement(parsed)
+                isReconciling.value = false
+                val msg = "Extrato OFX importado: $count transações novas processadas."
+                reconciliationFeedback.value = msg
+                onResult(true, msg)
+            } catch (e: Exception) {
+                isReconciling.value = false
+                val err = "Falha ao importar OFX: ${e.localizedMessage ?: "Formato inválido"}"
+                reconciliationFeedback.value = err
+                onResult(false, err)
+            }
+        }
+    }
+
+    fun importCsvStream(
+        inputStream: InputStream,
+        accountId: String,
+        fileName: String,
+        fileSize: Long,
+        config: CsvConfig?,
+        onResult: (Boolean, String) -> Unit
+    ) {
+        viewModelScope.launch {
+            try {
+                isReconciling.value = true
+                val parsed = CsvParser.parse(inputStream, accountId, fileName, fileSize, config)
+                val (_, count) = repository.importBankStatement(parsed)
+                isReconciling.value = false
+                val msg = "Extrato CSV importado: $count transações novas processadas."
+                reconciliationFeedback.value = msg
+                onResult(true, msg)
+            } catch (e: Exception) {
+                isReconciling.value = false
+                val err = "Falha ao importar CSV: ${e.localizedMessage ?: "Erro na estrutura do arquivo"}"
+                reconciliationFeedback.value = err
+                onResult(false, err)
+            }
+        }
+    }
+
+    fun loadMatchSuggestion(tx: BankTransactionEntity) {
+        selectedTransactionForMatch.value = tx
+        viewModelScope.launch {
+            val suggestion = repository.getMatchSuggestion(tx.id)
+            currentMatchSuggestion.value = suggestion
+        }
+    }
+
+    fun clearMatchSuggestion() {
+        selectedTransactionForMatch.value = null
+        currentMatchSuggestion.value = null
+    }
+
+    fun confirmFluxoA(
+        txId: String,
+        paymentId: String,
+        onDone: (Boolean, String) -> Unit
+    ) {
+        viewModelScope.launch {
+            try {
+                repository.reconcileFluxoA(txId, paymentId)
+                clearMatchSuggestion()
+                val msg = "Fluxo A: Transação vinculada com sucesso ao pagamento existente."
+                reconciliationFeedback.value = msg
+                onDone(true, msg)
+            } catch (e: Exception) {
+                val err = "Falha na conciliação (Fluxo A): ${e.localizedMessage}"
+                reconciliationFeedback.value = err
+                onDone(false, err)
+            }
+        }
+    }
+
+    fun confirmFluxoB(
+        txId: String,
+        receivableId: String,
+        feeCents: Long,
+        method: PaymentMethod = PaymentMethod.PIX,
+        onDone: (Boolean, String) -> Unit
+    ) {
+        viewModelScope.launch {
+            try {
+                repository.reconcileFluxoB(txId, receivableId, feeCents, method)
+                clearMatchSuggestion()
+                val msg = "Fluxo B: Recebimento baixado e creditado na conta com sucesso."
+                reconciliationFeedback.value = msg
+                onDone(true, msg)
+            } catch (e: Exception) {
+                val err = "Falha na baixa da cobrança (Fluxo B): ${e.localizedMessage}"
+                reconciliationFeedback.value = err
+                onDone(false, err)
+            }
+        }
+    }
+
+    fun confirmExpense(
+        txId: String,
+        expenseId: String,
+        onDone: (Boolean, String) -> Unit
+    ) {
+        viewModelScope.launch {
+            try {
+                repository.reconcileExpense(txId, expenseId)
+                clearMatchSuggestion()
+                val msg = "Despesa vinculada e baixada com sucesso."
+                reconciliationFeedback.value = msg
+                onDone(true, msg)
+            } catch (e: Exception) {
+                val err = "Falha ao vincular despesa: ${e.localizedMessage}"
+                reconciliationFeedback.value = err
+                onDone(false, err)
+            }
+        }
+    }
+
+    fun undoReconciliation(
+        reconciliationId: String,
+        reason: String,
+        onDone: (Boolean, String) -> Unit
+    ) {
+        viewModelScope.launch {
+            try {
+                repository.undoReconciliation(reconciliationId, reason)
+                val msg = "Conciliação desfeita com registro de auditoria."
+                reconciliationFeedback.value = msg
+                onDone(true, msg)
+            } catch (e: Exception) {
+                val err = "Falha ao desfazer conciliação: ${e.localizedMessage}"
+                reconciliationFeedback.value = err
+                onDone(false, err)
+            }
+        }
+    }
+
+    fun ignoreBankTransaction(txId: String) {
+        viewModelScope.launch {
+            repository.ignoreTransaction(txId)
+            clearMatchSuggestion()
+        }
+    }
+
+    fun restoreBankTransaction(txId: String) {
+        viewModelScope.launch {
+            repository.restoreTransaction(txId)
+            clearMatchSuggestion()
         }
     }
 }

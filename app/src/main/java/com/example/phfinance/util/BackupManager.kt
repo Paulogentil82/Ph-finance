@@ -5,6 +5,8 @@ import android.content.Intent
 import androidx.core.content.FileProvider
 import com.example.phfinance.data.local.AccountMovementEntity
 import com.example.phfinance.data.local.AccountTransferEntity
+import com.example.phfinance.data.local.BankImportEntity
+import com.example.phfinance.data.local.BankTransactionEntity
 import com.example.phfinance.data.local.BusinessSettingsEntity
 import com.example.phfinance.data.local.ClientEntity
 import com.example.phfinance.data.local.ClosureHistoryEntity
@@ -20,6 +22,8 @@ import com.example.phfinance.data.local.NotificationLogEntity
 import com.example.phfinance.data.local.PaymentEntity
 import com.example.phfinance.data.local.PhFinanceDao
 import com.example.phfinance.data.local.ReceivableEntity
+import com.example.phfinance.data.local.ReconciliationAuditEntity
+import com.example.phfinance.data.local.ReconciliationEntity
 import com.example.phfinance.data.local.ServiceEntity
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
@@ -38,7 +42,7 @@ import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 
 data class BackupPayload(
-    val version: Int = 3,
+    val version: Int = 4,
     val timestamp: Long = System.currentTimeMillis(),
     val clients: List<ClientEntity> = emptyList(),
     val services: List<ServiceEntity> = emptyList(),
@@ -56,11 +60,15 @@ data class BackupPayload(
     val notificationLogs: List<NotificationLogEntity> = emptyList(),
     val monthlyClosures: List<MonthlyClosureEntity> = emptyList(),
     val closureHistories: List<ClosureHistoryEntity> = emptyList(),
-    val messageTemplates: List<MessageTemplateEntity> = emptyList()
+    val messageTemplates: List<MessageTemplateEntity> = emptyList(),
+    val bankImports: List<BankImportEntity> = emptyList(),
+    val bankTransactions: List<BankTransactionEntity> = emptyList(),
+    val reconciliations: List<ReconciliationEntity> = emptyList(),
+    val reconciliationAudits: List<ReconciliationAuditEntity> = emptyList()
 )
 
 data class EncryptedBackupWrapper(
-    val version: Int = 3,
+    val version: Int = 4,
     val timestamp: Long = System.currentTimeMillis(),
     val saltBase64: String,
     val ivBase64: String,
@@ -93,14 +101,14 @@ object BackupManager {
     fun encryptPayloadToWrapper(
         rawPayload: BackupPayload,
         password: String,
-        version: Int = 3
+        version: Int = 4
     ): EncryptedBackupWrapper {
         require(password.length >= 6) { "A senha de backup deve ter no mínimo 6 caracteres." }
 
         val jsonString = payloadAdapter.toJson(rawPayload)
         val sha256 = calculateSha256(jsonString)
 
-        val iterations = if (version == 3) PBKDF2_ITERATIONS_V3 else PBKDF2_ITERATIONS_V2
+        val iterations = if (version >= 3) PBKDF2_ITERATIONS_V3 else PBKDF2_ITERATIONS_V2
 
         // Generate Salt & IV using SecureRandom
         val random = SecureRandom()
@@ -143,6 +151,7 @@ object BackupManager {
             ?: throw IllegalArgumentException("Arquivo de backup corrompido ou formato inválido.")
 
         val iterations = when (wrapper.version) {
+            4 -> PBKDF2_ITERATIONS_V3
             3 -> PBKDF2_ITERATIONS_V3
             2 -> PBKDF2_ITERATIONS_V2
             else -> PBKDF2_ITERATIONS_V2
@@ -192,9 +201,13 @@ object BackupManager {
         val closures = dao.observeAllClosures().first()
         val closureHistories = dao.observeAllClosureHistories().first()
         val templates = dao.observeAllTemplates().first()
+        val bankImports = dao.observeAllBankImports().first()
+        val bankTransactions = dao.observeAllBankTransactions().first()
+        val reconciliations = dao.observeAllReconciliations().first()
+        val reconciliationAudits = dao.observeAllReconciliationAudits().first()
 
         val rawPayload = BackupPayload(
-            version = 3,
+            version = 4,
             timestamp = System.currentTimeMillis(),
             clients = clients,
             services = services,
@@ -212,10 +225,14 @@ object BackupManager {
             notificationLogs = notificationLogs,
             monthlyClosures = closures,
             closureHistories = closureHistories,
-            messageTemplates = templates
+            messageTemplates = templates,
+            bankImports = bankImports,
+            bankTransactions = bankTransactions,
+            reconciliations = reconciliations,
+            reconciliationAudits = reconciliationAudits
         )
 
-        val wrapper = encryptPayloadToWrapper(rawPayload, password, version = 3)
+        val wrapper = encryptPayloadToWrapper(rawPayload, password, version = 4)
         val finalEncryptedJson = wrapperAdapter.toJson(wrapper)
 
         // Share via FileProvider
@@ -286,6 +303,10 @@ object BackupManager {
         payload.monthlyClosures.forEach { dao.insertOrUpdateClosure(it) }
         payload.closureHistories.forEach { dao.insertClosureHistory(it) }
         payload.messageTemplates.forEach { dao.insertMessageTemplate(it) }
+        payload.bankImports.forEach { dao.insertBankImport(it) }
+        payload.bankTransactions.forEach { dao.insertBankTransaction(it) }
+        payload.reconciliations.forEach { dao.insertReconciliation(it) }
+        payload.reconciliationAudits.forEach { dao.insertReconciliationAudit(it) }
 
         BackupImportResult(
             success = true,
